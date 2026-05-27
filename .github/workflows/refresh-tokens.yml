@@ -19,7 +19,7 @@ jobs:
       - name: Setup Node.js Environment
         uses: actions/setup-node@v4
         with:
-          node-node-version: '20'
+          node-version: '24' # Fixed the typo here and bumped to Node 24
 
       - name: Install Puppeteer Chromium Dependencies
         run: |
