@@ -1,10 +1,7 @@
 const fs   = require('fs');
 const path = require('path');
 
-const TOKEN_API      = 'https://vds.nc.insight-atms.com/api/SecureTokenUri/GetSecureTokenUriBySourceId';
-const PROBE_SOURCE   = '589';
-const PROBE_DIVISION = 'Division 14';
-const UUID_RE        = /[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}/i;
+const TOKEN_API = 'https://vds.nc.insight-atms.com/api/SecureTokenUri/GetSecureTokenUriBySourceId';
 
 async function getFreshStreamToken() {
     const puppeteer = require('puppeteer');
@@ -16,90 +13,95 @@ async function getFreshStreamToken() {
     const page = await browser.newPage();
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
 
-    let clientUUID = null;
-
-    // Intercept every response on page load and look for a UUID
+    // Capture the stream token from the API response the moment it fires
+    let streamToken = null;
     page.on('response', async response => {
-        const url    = response.url();
-        const status = response.status();
-        const ct     = response.headers()['content-type'] || '';
-
-        // Only inspect JSON / plain-text responses
-        if (!ct.includes('json') && !ct.includes('text/plain')) return;
-
+        if (!response.url().includes('GetSecureTokenUri')) return;
         try {
             const text = await response.text();
-
-            // Log every JSON response so we can see what's available
-            if (ct.includes('json') && text.length < 2000) {
-                console.log(`[response] ${status} ${url}`);
-                console.log(`           ${text.slice(0, 300)}`);
-            }
-
-            // Grab the first UUID we find
-            if (!clientUUID) {
-                const m = text.match(UUID_RE);
-                if (m) {
-                    clientUUID = m[0];
-                    console.log(`✔ UUID found in response from: ${url}`);
-                    console.log(`  Value: ${clientUUID}`);
-                }
-            }
+            console.log(`[GetSecureTokenUri] HTTP ${response.status()}: ${text}`);
+            const m = text.match(/token=([a-f0-9]+)/);
+            if (m) streamToken = m[1];
         } catch (_) {}
     });
 
     console.log('Loading drivenc.gov...');
     await page.goto('https://www.drivenc.gov/', { waitUntil: 'networkidle2', timeout: 90000 });
-    // Extra wait for any deferred API calls
-    await new Promise(r => setTimeout(r, 5000));
+    console.log('Page loaded. Waiting for camera markers...');
 
-    if (!clientUUID) {
-        // Last resort: inspect the full JS heap for UUID-shaped strings
-        console.log('No UUID in responses — scanning JS heap...');
-        clientUUID = await page.evaluate(() => {
-            const re = /[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}/i;
-            // Walk every enumerable window property one level deep
-            for (const key of Object.keys(window)) {
-                try {
-                    const val = window[key];
-                    if (typeof val === 'string' && re.test(val)) return val;
-                    if (val && typeof val === 'object') {
-                        const json = JSON.stringify(val);
-                        const m = json.match(re);
-                        if (m) return m[0];
-                    }
-                } catch (_) {}
-            }
-            return null;
+    // Camera markers are rendered as img tags with the camera SVG
+    // Wait up to 30s for at least one to appear
+    try {
+        await page.waitForSelector('img[src*="map_camera"]', { timeout: 30000 });
+    } catch (_) {
+        // Markers may be divs or use a different mechanism — log what's in the DOM
+        const markerInfo = await page.evaluate(() => {
+            const imgs = [...document.querySelectorAll('img')].map(i => i.src).filter(s => s.includes('511') || s.includes('camera'));
+            const divs = [...document.querySelectorAll('[title], [aria-label]')]
+                .slice(0, 10).map(el => ({ tag: el.tagName, title: el.title || el.getAttribute('aria-label') }));
+            return { imgs, divs };
         });
-        if (clientUUID) console.log(`✔ UUID found in JS heap: ${clientUUID}`);
+        console.log('Camera img srcs found:', markerInfo.imgs);
+        console.log('Titled/labelled elements:', JSON.stringify(markerInfo.divs));
     }
 
-    if (!clientUUID) {
+    // Click the first camera marker
+    const clicked = await page.evaluate(() => {
+        // Try img tag first
+        const img = document.querySelector('img[src*="map_camera"]');
+        if (img) { img.click(); return 'img[src*="map_camera"]'; }
+
+        // Fallback: any element with title/aria-label hinting at camera
+        const els = [...document.querySelectorAll('[title], [aria-label]')];
+        const cam = els.find(el => {
+            const label = (el.title || el.getAttribute('aria-label') || '').toLowerCase();
+            return label.includes('camera') || label.includes('cctv') || label.includes('video');
+        });
+        if (cam) { cam.click(); return cam.title || cam.getAttribute('aria-label'); }
+
+        return null;
+    });
+
+    if (!clicked) {
         await browser.close();
-        throw new Error('UUID not found in any response or JS heap. Check [response] logs above.');
+        throw new Error('No camera marker found in DOM. Check selector output above.');
     }
+    console.log(`Clicked marker: ${clicked}`);
 
-    // Call the token API from inside the browser (carries session cookie)
-    const result = await page.evaluate(async (apiUrl, uuid, sourceId, systemSourceId) => {
-        const res = await fetch(apiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: JSON.stringify({ token: uuid, sourceId, systemSourceId }),
+    // Wait for the info popup to appear, then find and click "Show Video"
+    await new Promise(r => setTimeout(r, 3000));
+
+    const videoClicked = await page.evaluate(() => {
+        // Look for "Show Video" or "Video" button/link/span in the popup
+        const all = [...document.querySelectorAll('a, button, span, div')];
+        const btn = all.find(el => /show\s*video|play\s*video|view\s*video|watch/i.test(el.textContent));
+        if (btn) { btn.click(); return btn.textContent.trim(); }
+        return null;
+    });
+
+    if (!videoClicked) {
+        // Log visible popup text to help diagnose
+        const popupText = await page.evaluate(() => {
+            const popup = document.querySelector('.gm-style-iw, [class*="popup"], [class*="infowindow"], [class*="info-window"]');
+            return popup ? popup.innerText : '(no popup found)';
         });
-        return { status: res.status, body: await res.text() };
-    }, TOKEN_API, clientUUID, PROBE_SOURCE, PROBE_DIVISION);
+        console.log('Popup text:', popupText);
+        await browser.close();
+        throw new Error('Could not find "Show Video" button in popup.');
+    }
+    console.log(`Clicked: "${videoClicked}"`);
+
+    // Wait for the token API call to complete
+    const deadline = Date.now() + 15000;
+    while (!streamToken && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 500));
+    }
 
     await browser.close();
-    console.log(`Token API → HTTP ${result.status}: ${result.body}`);
 
-    if (result.status !== 200) throw new Error(`Token API HTTP ${result.status}: ${result.body}`);
-
-    const match = result.body.match(/token=([a-f0-9]+)/);
-    if (!match) throw new Error(`Stream token not found in: ${result.body}`);
-
-    console.log(`✅ Stream token: ${match[1]}`);
-    return match[1];
+    if (!streamToken) throw new Error('Token API was not called after clicking Show Video.');
+    console.log(`✅ Stream token: ${streamToken}`);
+    return streamToken;
 }
 
 async function updateIndexHTML() {
