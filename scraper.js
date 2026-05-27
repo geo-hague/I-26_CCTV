@@ -1,20 +1,21 @@
 const fs   = require('fs');
 const path = require('path');
 
-// One probe channel is enough — the token is shared across all cameras
 const PROBE_SOURCE_ID = 'chan-5373_l';
 const TOKEN_API = 'https://vds.nc.insight-atms.com/api/SecureTokenUri/GetSecureTokenUriBySourceId';
 
 async function getFreshToken() {
-    const url = `${TOKEN_API}?sourceId=${PROBE_SOURCE_ID}`;
-    console.log(`Fetching token from: ${url}`);
+    console.log(`Fetching token for sourceId: ${PROBE_SOURCE_ID}`);
 
-    const res = await fetch(url, {
+    const res = await fetch(TOKEN_API, {
+        method: 'POST',
         headers: {
-            'Accept':          'application/json, text/plain, */*',
-            'Referer':         'https://www.drivenc.gov/',
-            'Origin':          'https://www.drivenc.gov',
-        }
+            'Content-Type': 'application/json',
+            'Accept':       'application/json, text/plain, */*',
+            'Referer':      'https://www.drivenc.gov/',
+            'Origin':       'https://www.drivenc.gov',
+        },
+        body: JSON.stringify({ sourceId: PROBE_SOURCE_ID }),
     });
 
     if (!res.ok) {
@@ -24,8 +25,6 @@ async function getFreshToken() {
     const data = await res.json();
     console.log('API response:', JSON.stringify(data));
 
-    // Extract token from wherever it sits in the response.
-    // Common shapes: { uri: "...?token=XXX" }  or  { token: "XXX" }  or  just a plain string URL
     let token = null;
 
     if (typeof data === 'string') {
