@@ -2,12 +2,15 @@ name: Scheduled Token Refresh
 
 on:
   schedule:
-    # Runs every 6 hours automatically (At minute 0 of hours 0, 6, 12, 18)
     - cron: '0 */6 * * *'
-  workflow_dispatch: # Allows you to trigger this manually from the GitHub UI Actions tab
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+# This fixes the Node 20 deprecation warning for all actions in this workflow
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
   refresh:
@@ -19,9 +22,16 @@ jobs:
       - name: Setup Node.js Environment
         uses: actions/setup-node@v4
         with:
-          node-version: '24' # Fixed the typo here and bumped to Node 24
+          node-version: '24'
 
-      - name: Install Puppeteer Chromium Dependencies
+      # Fixes Puppeteer missing Linux libraries on GitHub's Ubuntu runner
+      - name: Install Google Chrome/Chromium Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget gnupg
+          sudo apt-get install -y libgbm-dev libasound2 libatk-bridge2.0-0 libgtk-3-0
+
+      - name: Install Puppeteer
         run: |
           npm init -y
           npm install puppeteer
