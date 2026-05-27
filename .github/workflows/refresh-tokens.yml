@@ -2,13 +2,12 @@ name: Scheduled Token Refresh
 
 on:
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '11 10,16,22 * * *'
   workflow_dispatch:
 
 permissions:
   contents: write
 
-# This fixes the Node 20 deprecation warning for all actions in this workflow
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
@@ -24,14 +23,7 @@ jobs:
         with:
           node-version: '24'
 
-      # Fixes Puppeteer missing Linux libraries on GitHub's Ubuntu runner
-      - name: Install Google Chrome/Chromium Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wget gnupg
-          sudo apt-get install -y libgbm-dev libasound2 libatk-bridge2.0-0 libgtk-3-0
-
-      - name: Install Puppeteer
+      - name: Initialize and Install Dependencies
         run: |
           npm init -y
           npm install puppeteer
