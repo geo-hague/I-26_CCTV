@@ -3,7 +3,108 @@ const path = require('path');
 
 const TOKEN_API = 'https://vds.nc.insight-atms.com/api/SecureTokenUri/GetSecureTokenUriBySourceId';
 
-async function getFreshStreamToken() {
+// Our cameras: channel name → host
+const CAMERA_CHANNELS = [
+    { host: "cfase02", chan: "chan-5373_l" },
+    { host: "cfase03", chan: "chan-5374_l" },
+    { host: "cfase04", chan: "chan-5375_l" },
+    { host: "cfsse11", chan: "chan-5376_l" },
+    { host: "cfase01", chan: "chan-5378_l" },
+    { host: "cfase02", chan: "chan-6332_l" },
+    { host: "cfase04", chan: "chan-5381_l" },
+    { host: "cfase04", chan: "chan-5432_l" },
+    { host: "cfase03", chan: "chan-5440_l" },
+    { host: "cfsse13", chan: "chan-5441_l" },
+    { host: "cfase03", chan: "chan-6279_l" },
+    { host: "cfsse02", chan: "chan-5442_l" },
+    { host: "cfase02", chan: "chan-5443_l" },
+    { host: "cfase01", chan: "chan-6275_l" },
+    { host: "cfase03", chan: "chan-6276_l" },
+    { host: "cfsse05", chan: "chan-6327_l" },
+    { host: "cfsse05", chan: "chan-6328_l" },
+    { host: "cfsse03", chan: "chan-5444_l" },
+    { host: "cfase03", chan: "chan-5446_l" },
+    { host: "cfase05", chan: "chan-5445_l" },
+];
+
+async function findSourceIds(page) {
+    console.log('Intercepting camera data API calls...');
+
+    const cameraData = [];
+
+    // Capture any API response that looks like a camera list
+    page.on('response', async response => {
+        const url = response.url();
+        if (!url.includes('insight-atms') && !url.includes('drivenc')) return;
+        try {
+            const text = await response.text();
+            if (!text.includes('sourceId') && !text.includes('SourceId') && !text.includes('chan-')) return;
+            console.log(`[camera data] ${url}`);
+            console.log(`  ${text.slice(0, 500)}`);
+            try {
+                const json = JSON.parse(text);
+                const items = Array.isArray(json) ? json : Object.values(json).find(v => Array.isArray(v)) || [];
+                cameraData.push(...items);
+            } catch (_) {}
+        } catch (_) {}
+    });
+
+    // Enable the Cameras layer by clicking the checkbox
+    const cameraCheckbox = await page.evaluate(() => {
+        const labels = [...document.querySelectorAll('label, span, div')];
+        const camLabel = labels.find(el => el.textContent?.trim() === 'Cameras');
+        if (!camLabel) return null;
+        const checkbox = camLabel.previousElementSibling || camLabel.querySelector('input') || document.querySelector('input[id*="amera"]');
+        if (checkbox) { checkbox.click(); return true; }
+        camLabel.click();
+        return 'label clicked';
+    });
+    console.log('Cameras layer toggle:', cameraCheckbox);
+
+    // Wait for camera data to load
+    await new Promise(r => setTimeout(r, 8000));
+
+    return cameraData;
+}
+
+async function getTokensForAllCameras(page, sourceIdMap) {
+    const tokens = {};
+
+    for (const cam of CAMERA_CHANNELS) {
+        const chanBase = cam.chan.replace('_l', '');
+        const entry = sourceIdMap[chanBase];
+
+        if (!entry) {
+            console.warn(`⚠ No sourceId found for ${cam.chan}`);
+            continue;
+        }
+
+        try {
+            const result = await page.evaluate(async (apiUrl, sourceId, systemSourceId) => {
+                const res = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    body: JSON.stringify({ token: crypto.randomUUID(), sourceId, systemSourceId }),
+                });
+                return { status: res.status, body: await res.text() };
+            }, TOKEN_API, entry.sourceId, entry.systemSourceId);
+
+            const m = result.body.match(/token=([a-f0-9]+)/);
+            if (m) {
+                tokens[cam.chan] = m[1];
+                console.log(`✅ ${cam.chan} → ${m[1].slice(0, 16)}...`);
+            } else {
+                console.warn(`⚠ ${cam.chan}: no token in response: ${result.body}`);
+            }
+        } catch (e) {
+            console.warn(`⚠ ${cam.chan}: ${e.message}`);
+        }
+    }
+
+    return tokens;
+}
+
+async function run() {
     const puppeteer = require('puppeteer');
     const browser = await puppeteer.launch({
         headless: true,
@@ -14,97 +115,51 @@ async function getFreshStreamToken() {
     await page.setViewport({ width: 1280, height: 900 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
 
-    let streamToken = null;
-    page.on('response', async response => {
-        if (!response.url().includes('GetSecureTokenUri')) return;
-        try {
-            const text = await response.text();
-            console.log(`[token API] HTTP ${response.status()}: ${text}`);
-            const m = text.match(/token=([a-f0-9]+)/);
-            if (m) streamToken = m[1];
-        } catch (_) {}
-    });
-
     console.log('Loading drivenc.gov...');
     await page.goto('https://www.drivenc.gov/', { waitUntil: 'networkidle2', timeout: 90000 });
     await new Promise(r => setTimeout(r, 3000));
 
-    // Close modal with Escape key
+    // Dismiss modal
     await page.keyboard.press('Escape');
-    await new Promise(r => setTimeout(r, 500));
-
-    // Also try clicking the X button using real mouse coordinates
     const xBtn = await page.evaluate(() => {
-        const btn = document.querySelector('.modal .close, .modal [aria-label="Close"], .modal-header .close');
+        const btn = document.querySelector('.modal .close, .modal-header .close, button[aria-label="Close"]');
         if (!btn) return null;
-        const rect = btn.getBoundingClientRect();
-        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+        const r = btn.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
     });
-    if (xBtn) {
-        await page.mouse.click(xBtn.x, xBtn.y);
-        console.log(`Clicked modal X at (${xBtn.x}, ${xBtn.y})`);
-    }
+    if (xBtn && xBtn.x > 0) await page.mouse.click(xBtn.x, xBtn.y);
     await new Promise(r => setTimeout(r, 1000));
 
-    // Confirm modal is gone
-    const modalGone = await page.evaluate(() => {
-        const modal = document.querySelector('.modal.show, .modal[style*="display: block"], .modal-backdrop');
-        return !modal;
-    });
-    console.log(`Modal dismissed: ${modalGone}`);
+    // Discover camera sourceIds from the map layer API
+    const cameraData = await findSourceIds(page);
+    console.log(`\nFound ${cameraData.length} camera entries from API.`);
+    if (cameraData.length > 0) console.log('Sample:', JSON.stringify(cameraData[0]));
 
-    // Find and mouse-click Show Video button
-    const pos = await page.evaluate(() => {
-        const all = [...document.querySelectorAll('button, a')];
-        const btn = all.find(el => /show\s*video/i.test(el.textContent?.trim()));
-        if (!btn) return null;
-        const rect = btn.getBoundingClientRect();
-        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, text: btn.textContent.trim() };
-    });
+    // Build channel → sourceId map
+    const sourceIdMap = {};
+    for (const cam of cameraData) {
+        // Look for our channel IDs in any string field of the camera object
+        const str = JSON.stringify(cam);
+        for (const ch of CAMERA_CHANNELS) {
+            const base = ch.chan.replace('_l', '');
+            if (str.includes(base)) {
+                sourceIdMap[base] = {
+                    sourceId: String(cam.sourceId || cam.SourceId || cam.id || cam.Id || cam.cameraId),
+                    systemSourceId: cam.systemSourceId || cam.SystemSourceId || cam.division || cam.Division || ''
+                };
+            }
+        }
+    }
 
-    if (!pos) throw new Error('Show Video button not found.');
-    console.log(`Clicking "${pos.text}" at (${pos.x}, ${pos.y})`);
-
-    await page.mouse.move(pos.x, pos.y);
-    await new Promise(r => setTimeout(r, 200));
-    await page.mouse.down();
-    await new Promise(r => setTimeout(r, 100));
-    await page.mouse.up();
-    await new Promise(r => setTimeout(r, 3000));
-
-    await page.screenshot({ path: 'debug.png' });
-    console.log('Screenshot taken.');
-
-    // Wait for token
-    const deadline = Date.now() + 15000;
-    while (!streamToken && Date.now() < deadline) await new Promise(r => setTimeout(r, 500));
-
+    console.log('\nSourceId map:', JSON.stringify(sourceIdMap, null, 2));
     await browser.close();
-    if (!streamToken) throw new Error('Token API not called — check debug.png');
 
-    console.log(`✅ Stream token: ${streamToken}`);
-    return streamToken;
+    if (Object.keys(sourceIdMap).length === 0) {
+        throw new Error('Could not build sourceId map — check API response logs above.');
+    }
 }
 
-async function updateIndexHTML() {
-    const token = await getFreshStreamToken();
-
-    const indexPath = path.join(__dirname, 'index.html');
-    if (!fs.existsSync(indexPath)) throw new Error('index.html not found');
-
-    let html = fs.readFileSync(indexPath, 'utf8');
-    const regex = /(\/\/ --- START TOKENS ---)[\s\S]*?(\/\/ --- END TOKENS ---)/;
-    if (!regex.test(html)) throw new Error('Anchor comments not found in index.html');
-
-    const config = { token, updated: new Date().toISOString() };
-    html = html.replace(regex,
-        `$1\n        const tokenConfig = ${JSON.stringify(config, null, 2)};\n        $2`);
-
-    fs.writeFileSync(indexPath, html, 'utf8');
-    console.log('✅ index.html updated successfully.');
-}
-
-updateIndexHTML().catch(err => {
+run().catch(err => {
     console.error('⛔', err.message);
     process.exit(1);
 });
