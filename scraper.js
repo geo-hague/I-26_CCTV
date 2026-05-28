@@ -11,15 +11,16 @@ async function getFreshStreamToken() {
     });
 
     const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 900 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
 
-    // Capture the stream token from the API response the moment it fires
+    // Intercept the token API response the moment it fires
     let streamToken = null;
     page.on('response', async response => {
         if (!response.url().includes('GetSecureTokenUri')) return;
         try {
             const text = await response.text();
-            console.log(`[GetSecureTokenUri] HTTP ${response.status()}: ${text}`);
+            console.log(`[token API] HTTP ${response.status()}: ${text}`);
             const m = text.match(/token=([a-f0-9]+)/);
             if (m) streamToken = m[1];
         } catch (_) {}
@@ -29,77 +30,71 @@ async function getFreshStreamToken() {
     await page.goto('https://www.drivenc.gov/', { waitUntil: 'networkidle2', timeout: 90000 });
     console.log('Page loaded. Waiting for camera markers...');
 
-    // Camera markers are rendered as img tags with the camera SVG
-    // Wait up to 30s for at least one to appear
-    try {
-        await page.waitForSelector('img[src*="map_camera"]', { timeout: 30000 });
-    } catch (_) {
-        // Markers may be divs or use a different mechanism — log what's in the DOM
-        const markerInfo = await page.evaluate(() => {
-            const imgs = [...document.querySelectorAll('img')].map(i => i.src).filter(s => s.includes('511') || s.includes('camera'));
-            const divs = [...document.querySelectorAll('[title], [aria-label]')]
-                .slice(0, 10).map(el => ({ tag: el.tagName, title: el.title || el.getAttribute('aria-label') }));
-            return { imgs, divs };
-        });
-        console.log('Camera img srcs found:', markerInfo.imgs);
-        console.log('Titled/labelled elements:', JSON.stringify(markerInfo.divs));
-    }
+    // Wait for camera marker images to be in the DOM
+    await page.waitForSelector('img[src*="map_camera"]', { timeout: 30000 });
 
-    // Click the first camera marker
-    const clicked = await page.evaluate(() => {
-        // Try img tag first
+    // Get the screen coordinates of the first camera marker and mouse-click it
+    const markerPos = await page.evaluate(() => {
         const img = document.querySelector('img[src*="map_camera"]');
-        if (img) { img.click(); return 'img[src*="map_camera"]'; }
-
-        // Fallback: any element with title/aria-label hinting at camera
-        const els = [...document.querySelectorAll('[title], [aria-label]')];
-        const cam = els.find(el => {
-            const label = (el.title || el.getAttribute('aria-label') || '').toLowerCase();
-            return label.includes('camera') || label.includes('cctv') || label.includes('video');
-        });
-        if (cam) { cam.click(); return cam.title || cam.getAttribute('aria-label'); }
-
-        return null;
+        if (!img) return null;
+        const rect = img.getBoundingClientRect();
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
     });
 
-    if (!clicked) {
-        await browser.close();
-        throw new Error('No camera marker found in DOM. Check selector output above.');
-    }
-    console.log(`Clicked marker: ${clicked}`);
+    if (!markerPos) throw new Error('Camera marker not found in DOM.');
+    console.log(`Mouse-clicking marker at (${markerPos.x}, ${markerPos.y})`);
+    await page.mouse.click(markerPos.x, markerPos.y);
 
-    // Wait for the info popup to appear, then find and click "Show Video"
+    // Wait for InfoWindow / popup to appear
     await new Promise(r => setTimeout(r, 3000));
 
-    const videoClicked = await page.evaluate(() => {
-        // Look for "Show Video" or "Video" button/link/span in the popup
-        const all = [...document.querySelectorAll('a, button, span, div')];
-        const btn = all.find(el => /show\s*video|play\s*video|view\s*video|watch/i.test(el.textContent));
-        if (btn) { btn.click(); return btn.textContent.trim(); }
-        return null;
+    // Log the popup content so we know exactly what text/buttons are inside
+    const popupInfo = await page.evaluate(() => {
+        const sel = '.gm-style-iw, [class*="info"], [class*="popup"], [class*="tooltip"]';
+        const popup = document.querySelector(sel);
+        if (!popup) return null;
+        return {
+            text: popup.innerText?.slice(0, 500),
+            buttons: [...popup.querySelectorAll('a, button, [role="button"]')]
+                .map(el => ({ tag: el.tagName, text: el.innerText?.trim(), class: el.className }))
+        };
     });
 
-    if (!videoClicked) {
-        // Log visible popup text to help diagnose
-        const popupText = await page.evaluate(() => {
-            const popup = document.querySelector('.gm-style-iw, [class*="popup"], [class*="infowindow"], [class*="info-window"]');
-            return popup ? popup.innerText : '(no popup found)';
-        });
-        console.log('Popup text:', popupText);
+    if (!popupInfo) {
+        // Take a screenshot for debugging
+        await page.screenshot({ path: 'debug.png', fullPage: false });
+        console.log('No popup found — saved debug.png');
         await browser.close();
-        throw new Error('Could not find "Show Video" button in popup.');
+        throw new Error('No popup appeared after clicking camera marker.');
     }
-    console.log(`Clicked: "${videoClicked}"`);
 
-    // Wait for the token API call to complete
-    const deadline = Date.now() + 15000;
-    while (!streamToken && Date.now() < deadline) {
-        await new Promise(r => setTimeout(r, 500));
+    console.log('Popup text:', popupInfo.text);
+    console.log('Popup buttons:', JSON.stringify(popupInfo.buttons));
+
+    // Mouse-click the Show Video button using its coordinates
+    const videoBtn = await page.evaluate(() => {
+        const all = [...document.querySelectorAll('a, button, [role="button"], span, div')];
+        const btn = all.find(el => /show.?video|play|video|watch|stream/i.test(el.textContent?.trim()));
+        if (!btn) return null;
+        const rect = btn.getBoundingClientRect();
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, text: btn.textContent?.trim() };
+    });
+
+    if (!videoBtn) {
+        await browser.close();
+        throw new Error('Could not find Show Video button — check popup buttons logged above.');
     }
+
+    console.log(`Mouse-clicking "${videoBtn.text}" at (${videoBtn.x}, ${videoBtn.y})`);
+    await page.mouse.click(videoBtn.x, videoBtn.y);
+
+    // Wait for token API call
+    const deadline = Date.now() + 15000;
+    while (!streamToken && Date.now() < deadline) await new Promise(r => setTimeout(r, 500));
 
     await browser.close();
-
     if (!streamToken) throw new Error('Token API was not called after clicking Show Video.');
+
     console.log(`✅ Stream token: ${streamToken}`);
     return streamToken;
 }
