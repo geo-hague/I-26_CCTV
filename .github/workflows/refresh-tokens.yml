@@ -29,6 +29,13 @@ jobs:
       - name: Fetch Fresh Token and Update index.html
         run: node scraper.js
 
+      - name: Upload debug screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshot
+          path: debug.png
+
       - name: Commit and Push
         run: |
           git config --global user.name "github-actions[bot]"
