@@ -24,6 +24,7 @@ const CAMERA_CHANNELS = [
     { host: "cfase05", chan: "chan-5445_l" },
 ];
 const KNOWN_CHANS = new Set(CAMERA_CHANNELS.map(c => c.chan));
+const TOKEN_API = 'https://vds.nc.insight-atms.com/api/SecureTokenUri/GetSecureTokenUriBySourceId';
 
 async function scrapeTokens() {
     const puppeteer = require('puppeteer');
@@ -36,16 +37,41 @@ async function scrapeTokens() {
     await page.setViewport({ width: 1280, height: 900 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
 
-    const captured = {};
+    // Enable interception so we can read POST bodies
+    await page.setRequestInterception(true);
 
-    // Also intercept requests as a backup
+    const captured    = {};
+    let sessionUUID   = null;
+    let sampleSourceId = null;
+    let sampleDivision = null;
+
     page.on('request', req => {
         const url = req.url();
-        const m = url.match(/\/(chan-\d+_l)\/index\.m3u8\?token=([a-f0-9]+)/);
-        if (m && KNOWN_CHANS.has(m[1]) && !captured[m[1]]) {
-            captured[m[1]] = m[2];
-            console.log(`[request intercept] ${m[1]} → ${m[2].slice(0,16)}...`);
+
+        // Capture POST body to insight-atms
+        if (url.includes('GetSecureTokenUri') && req.method() === 'POST') {
+            try {
+                const body = JSON.parse(req.postData() || '{}');
+                if (body.token && !sessionUUID) {
+                    sessionUUID   = body.token;
+                    sampleSourceId = body.sourceId;
+                    sampleDivision = body.systemSourceId;
+                    console.log(`[UUID captured] ${sessionUUID}`);
+                    console.log(`[sample camera] sourceId=${sampleSourceId} division=${sampleDivision}`);
+                }
+            } catch (_) {}
         }
+
+        // Capture tokens from stream URLs
+        if (url.includes('services.ncdot.gov')) {
+            const m = url.match(/\/(chan-[\d]+_l)\/index\.m3u8\?token=([a-f0-9]+)/);
+            if (m && KNOWN_CHANS.has(m[1]) && !captured[m[1]]) {
+                captured[m[1]] = m[2];
+                console.log(`[stream URL] ${m[1]} → ${m[2].slice(0,16)}...`);
+            }
+        }
+
+        req.continue();
     });
 
     console.log('Loading drivenc.gov...');
@@ -54,7 +80,7 @@ async function scrapeTokens() {
 
     // Dismiss modal
     await page.keyboard.press('Escape');
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, 300));
     const xBtn = await page.evaluate(() => {
         const btn = document.querySelector('.modal .close, .modal-header .close, button[aria-label="Close"]');
         if (!btn) return null;
@@ -64,114 +90,98 @@ async function scrapeTokens() {
     if (xBtn) await page.mouse.click(xBtn.x, xBtn.y);
     await new Promise(r => setTimeout(r, 1000));
 
-    // Log the sidebar HTML so we can see the carousel structure
-    const sidebarHTML = await page.evaluate(() => {
-        const sidebar = document.querySelector('#cameras-panel, .camera-panel, [class*="camera"], #myCameras, .my-cameras');
-        if (sidebar) return sidebar.innerHTML.slice(0, 2000);
-        // Fallback: find the Show Video button and get its parent
-        const btn = [...document.querySelectorAll('button,a')].find(el => /show\s*video/i.test(el.textContent));
-        return btn ? btn.closest('[class]')?.innerHTML?.slice(0, 2000) : 'sidebar not found';
+    // Click Show Video to fire a POST and get the session UUID
+    const showVideoPos = await page.evaluate(() => {
+        const btn = [...document.querySelectorAll('button, a')]
+            .find(el => /show\s*video/i.test(el.textContent?.trim()));
+        if (!btn) return null;
+        const r = btn.getBoundingClientRect();
+        return r.width > 0 ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
     });
-    console.log('\n--- Sidebar HTML ---\n', sidebarHTML, '\n---\n');
-
-    const cycleCount = 25;
-    for (let i = 0; i < cycleCount; i++) {
-        // Click Show Video
-        const showVideoPos = await page.evaluate(() => {
-            const btn = [...document.querySelectorAll('button, a')]
-                .find(el => /show\s*video/i.test(el.textContent?.trim()));
-            if (!btn) return null;
-            const r = btn.getBoundingClientRect();
-            return r.width > 0 ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
-        });
-
-        if (!showVideoPos) { console.log(`[${i+1}] No Show Video button`); break; }
-
+    if (showVideoPos) {
         await page.mouse.move(showVideoPos.x, showVideoPos.y);
         await page.mouse.down(); await new Promise(r => setTimeout(r, 100)); await page.mouse.up();
-        await new Promise(r => setTimeout(r, 2000));
+        console.log('Clicked Show Video...');
+        await new Promise(r => setTimeout(r, 3000));
+    }
 
-        // Read the stream URL directly from every video/source element in the DOM
-        const videoUrls = await page.evaluate(() => {
-            const urls = [];
-            document.querySelectorAll('video, source').forEach(el => {
-                if (el.src) urls.push(el.src);
-                if (el.currentSrc) urls.push(el.currentSrc);
-            });
-            // Also check for HLS src in any data attributes or angular/react state
-            document.querySelectorAll('[src*="ncdot"], [data-src*="ncdot"]').forEach(el => {
-                urls.push(el.src || el.dataset.src);
-            });
-            // Check for stream URLs in any script-injected style or attribute
-            const allText = document.body.innerHTML;
-            const matches = allText.match(/https?:\/\/[^"'\s]*services\.ncdot\.gov[^"'\s]*/g) || [];
-            return [...new Set([...urls, ...matches])];
-        });
+    if (!sessionUUID) {
+        console.error('⛔ Session UUID not captured — POST interception failed.');
+        await page.screenshot({ path: 'debug.png' });
+        await browser.close();
+        process.exit(1);
+    }
 
-        for (const url of videoUrls) {
-            const m = url.match(/\/(chan-\d+_l)\/index\.m3u8\?token=([a-f0-9]+)/);
-            if (m && KNOWN_CHANS.has(m[1]) && !captured[m[1]]) {
-                captured[m[1]] = m[2];
-                console.log(`[DOM] ${m[1]} → ${m[2].slice(0,16)}...`);
+    // Use session UUID to probe insight-atms for a full source listing
+    console.log('\nProbing insight-atms API for camera source list...');
+    const probeUrls = [
+        `https://vds.nc.insight-atms.com/api/Sources/GetAll`,
+        `https://vds.nc.insight-atms.com/api/Sources`,
+        `https://vds.nc.insight-atms.com/api/Sources/GetBySystem`,
+        `https://vds.nc.insight-atms.com/api/VideoSources`,
+        `https://vds.nc.insight-atms.com/api/Cameras/GetAll`,
+        `https://vds.nc.insight-atms.com/api/SecureTokenUri/GetSources`,
+        // Try with session token as query param
+        `https://vds.nc.insight-atms.com/api/Sources?token=${sessionUUID}`,
+    ];
+
+    for (const url of probeUrls) {
+        const result = await page.evaluate(async (u, uuid) => {
+            try {
+                const res = await fetch(u, {
+                    headers: {
+                        'Accept': 'application/json',
+                        'Authorization': `Bearer ${uuid}`,
+                        'X-Token': uuid,
+                    }
+                });
+                return { status: res.status, body: (await res.text()).slice(0, 400) };
+            } catch (e) { return { status: 0, body: e.message }; }
+        }, url, sessionUUID);
+        console.log(`  ${url.split('/').slice(-1)[0].slice(0,40)} → ${result.status}: ${result.body.slice(0,120)}`);
+    }
+
+    // Try fetching tokens for all cameras using our known channel numbers as sourceIds
+    // Channel numbers like chan-5373 likely correspond to numeric sourceIds
+    // Try extracting the number and using it directly
+    console.log('\nTrying channel-number-as-sourceId for each camera...');
+    for (const cam of CAMERA_CHANNELS) {
+        if (captured[cam.chan]) continue;
+        // Extract numeric part from channel name: chan-5373_l → 5373
+        const numericId = cam.chan.match(/chan-(\d+)/)?.[1];
+        if (!numericId) continue;
+
+        for (const division of ['Division 14', 'Division 13', 'Division 12', 'Division 11', sampleDivision].filter(Boolean)) {
+            if (captured[cam.chan]) break;
+            const result = await page.evaluate(async (apiUrl, uuid, sourceId, div) => {
+                try {
+                    const res = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                        body: JSON.stringify({ token: uuid, sourceId, systemSourceId: div }),
+                    });
+                    return { status: res.status, body: await res.text() };
+                } catch (e) { return { status: 0, body: e.message }; }
+            }, TOKEN_API, sessionUUID, numericId, division);
+
+            if (result.status === 200) {
+                const m = result.body.match(/token=([a-f0-9]+)/);
+                if (m) {
+                    captured[cam.chan] = m[1];
+                    console.log(`  ✅ ${cam.chan} (sourceId=${numericId}, ${division}) → ${m[1].slice(0,16)}...`);
+                    break;
+                }
             }
         }
-
-        // Log camera name and any URLs found
-        const camName = await page.evaluate(() => {
-            const el = document.querySelector('[class*="camera-name"], [class*="cameraName"], [class*="camera-title"]');
-            return el?.textContent?.trim() || null;
-        });
-        console.log(`[${i+1}] Camera: ${camName || '?'} | URLs found: ${videoUrls.length} | Tokens: ${Object.keys(captured).length}/${KNOWN_CHANS.size}`);
-        if (videoUrls.length > 0) console.log('  URLs:', videoUrls.slice(0,3));
-
-        if (Object.keys(captured).length === KNOWN_CHANS.size) break;
-
-        // Navigate carousel — find arrows relative to the camera preview widget
-        // (avoid the main navbar by restricting to the sidebar/left panel area)
-        const arrowPos = await page.evaluate(() => {
-            // Get all buttons in the left sidebar (x < 400px)
-            const candidates = [...document.querySelectorAll('button, a, span')]
-                .filter(el => {
-                    const r = el.getBoundingClientRect();
-                    return r.width > 0 && r.x < 400 && r.x > 0 && r.y > 300;
-                });
-
-            // Find a right-facing arrow
-            const arrow = candidates.find(el => {
-                const text = el.textContent?.trim();
-                const cls  = (el.className || '') + (el.getAttribute('aria-label') || '');
-                return text === '>' || text === '›' || text === '❯' || text === '▶' ||
-                       /next|right|forward/i.test(cls);
-            });
-
-            if (!arrow) {
-                // Log all sidebar candidates to help diagnose
-                return {
-                    found: false,
-                    candidates: candidates.slice(0, 10).map(el => ({
-                        tag: el.tagName, text: el.textContent?.trim().slice(0,20),
-                        cls: el.className?.slice(0,40),
-                        x: Math.round(el.getBoundingClientRect().x),
-                        y: Math.round(el.getBoundingClientRect().y),
-                    }))
-                };
-            }
-            const r = arrow.getBoundingClientRect();
-            return { found: true, x: r.left + r.width / 2, y: r.top + r.height / 2, text: arrow.textContent?.trim(), cls: arrow.className };
-        });
-
-        if (arrowPos.found) {
-            await page.mouse.click(arrowPos.x, arrowPos.y);
-            console.log(`  → Carousel next at (${arrowPos.x}, ${arrowPos.y})`);
-            await new Promise(r => setTimeout(r, 2000));
-        } else {
-            console.log('  → No carousel arrow. Sidebar candidates:', JSON.stringify(arrowPos.candidates));
-            break;
+        if (!captured[cam.chan]) {
+            console.log(`  ✗ ${cam.chan} (tried sourceId=${numericId})`);
         }
     }
 
     await page.screenshot({ path: 'debug.png' });
     await browser.close();
+
+    console.log(`\nCaptured ${Object.keys(captured).length}/20 tokens.`);
     return captured;
 }
 
@@ -179,27 +189,22 @@ async function updateIndexHTML(newTokens) {
     const indexPath = path.join(__dirname, 'index.html');
     if (!fs.existsSync(indexPath)) throw new Error('index.html not found');
     let html = fs.readFileSync(indexPath, 'utf8');
-
     const existingMatch = html.match(/const tokenConfig = ({[\s\S]*?});/);
     let existing = {};
     if (existingMatch) { try { existing = JSON.parse(existingMatch[1]); } catch (_) {} }
-
     const merged = { ...existing, ...newTokens, updated: new Date().toISOString() };
     const regex = /(\/\/ --- START TOKENS ---)[\s\S]*?(\/\/ --- END TOKENS ---)/;
     if (!regex.test(html)) throw new Error('Anchor comments not found in index.html');
-
     html = html.replace(regex,
         `$1\n        const tokenConfig = ${JSON.stringify(merged, null, 2)};\n        $2`);
     fs.writeFileSync(indexPath, html, 'utf8');
-    console.log(`✅ index.html updated — ${Object.keys(newTokens).length} tokens refreshed.`);
-    if (Object.keys(newTokens).length < 20)
-        console.warn(`⚠ ${20 - Object.keys(newTokens).length} tokens not refreshed — previous values kept.`);
+    console.log(`✅ index.html updated — ${Object.keys(newTokens).length}/20 tokens refreshed.`);
 }
 
 async function main() {
     const tokens = await scrapeTokens();
     if (Object.keys(tokens).length === 0) {
-        console.error('⛔ No tokens captured. Check sidebar HTML log and debug.png above.');
+        console.error('⛔ No tokens captured.');
         process.exit(1);
     }
     await updateIndexHTML(tokens);
