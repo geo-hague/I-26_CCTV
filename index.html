@@ -30,21 +30,37 @@
     </style>
 </head>
 <body>
-
     <button id="prev-btn" class="nav-btn hidden">&larr; West</button>
     <button id="next-btn" class="nav-btn hidden">East &rarr;</button>
-
     <div id="grid" class="video-grid"></div>
 
     <script>
         // --- START TOKENS ---
         const tokenConfig = {
-  "token": "28dd89d2a1fbdf2180ecc34956809430b44f5922406d4c7d541a7f81cd8590da",
-  "updated": "2026-05-28T02:38:49.717Z"
+  "chan-5373_l": "6288a1a68f2538afa944c55613ccb099ec8c1ac182a98d16ca7727c07dbca197",
+  "chan-5374_l": "fcd300afdbc109c044d0087dda033c56897b2bee1e2bce4ce9559cd500246f25",
+  "chan-5375_l": "c43acd497c071b718d141edd66ef44cd51783f0b0587ac7f4adc80d1651adcf6",
+  "chan-5376_l": "04503c987c8e03bef512908f9f468e7115b86a041b8025302d11d974c0fbf4a9",
+  "chan-5378_l": "337d3375b1ea523483c74f734cb0f6bca618e63cb045de0a097fe8c808be072f",
+  "chan-6332_l": "a167f5447b3c2bc766b5050b8006f1d10b7f47c65e75d1b5452ce6bbfacc46ff",
+  "chan-5381_l": "ac13346e2d5a276c22811d03d9c39dd21933fd7f646d7632629321abbe180915",
+  "chan-5432_l": "c5a483794f239bb653d06a8d058c0ae2cf5cd94b9853e019a8506befe5273d8a",
+  "chan-5440_l": "2c9c6b529f5e0f08876aa0ebad2c57c2083ac61db6edd779a8a4555f6948d18c",
+  "chan-5441_l": "78a6ab3be7cbcec5bd0b0d4b0789b9e71126d1cd7fdfa4119a4e29b65006eadd",
+  "chan-6279_l": "152b31ae00e2f9bd19bbb3f2857f348426e81835d38af1987ee278bf52e431bf",
+  "chan-5442_l": "54a648c1db0f69f31892b880e4ca846a75a322aa0d006b8618cbf83c870c0285",
+  "chan-5443_l": "8be25e6484728b900acff32bf8227f4bda5c5cb2283c4d98d0f5237c83bc21d0",
+  "chan-6275_l": "cee21e8268bb74172d5b7db7aa4a46a7ddda95af7bf344ee17af56793c7e9905",
+  "chan-6276_l": "80210963962b423aede1f43cafc5ebcf70e4d7d72307a7428ea1fadb7885e5c1",
+  "chan-6327_l": "bb41a39417718eb2f5361ab6158759212ba322ac9ca7d98ea056f7994fa7dea9",
+  "chan-6328_l": "1bd251e18ffc773b062d29f1e6018dcad64e6270cda8fbdf2bf1f6e3cda85d44",
+  "chan-5444_l": "2e44aa812f790a6a9eca56d77a1af0dd3c7b496ed265b775ec45ac8d90a04c3f",
+  "chan-5446_l": "52db3b08da3a54d01d4277cdad43307bcdcabbf88f11ea230c336250ae50b1ef",
+  "chan-5445_l": "7e5b6a362edbe24844414b2813427ec517189708bece3687ad5f3000d8204793",
+  "updated": "Initial Setup"
 };
         // --- END TOKENS ---
 
-        // Configured channels with their respective subdomains
         const cameraChannels = [
             // Page 1
             { host: "cfase02", chan: "chan-5373_l" },
@@ -55,56 +71,45 @@
             { host: "cfase02", chan: "chan-6332_l" },
             { host: "cfase04", chan: "chan-5381_l" },
             { host: "cfase04", chan: "chan-5432_l" },
-            
             // Page 2
             { host: "cfase03", chan: "chan-5440_l" },
             { host: "cfsse13", chan: "chan-5441_l" },
             { host: "cfase03", chan: "chan-6279_l" },
-            { host: "cfsse02", chan: "chan-5442_l" },   
+            { host: "cfsse02", chan: "chan-5442_l" },
             { host: "cfase02", chan: "chan-5443_l" },
             { host: "cfase01", chan: "chan-6275_l" },
             { host: "cfase03", chan: "chan-6276_l" },
             { host: "cfsse05", chan: "chan-6327_l" },
-            
             // Page 3
-            // MM 55.5 Green River Bridge
-			{ host: "cfsse05", chan: "chan-6328_l" },
-			// Future MM 60
-			// Future MM 62?
-			// Future MM 63.5
+            { host: "cfsse05", chan: "chan-6328_l" },
             { host: "cfsse03", chan: "chan-5444_l" },
             { host: "cfase03", chan: "chan-5446_l" },
-			// Future MM 66
-            { host: "cfase05", chan: "chan-5445_l" }
+            { host: "cfase05", chan: "chan-5445_l" },
         ];
 
-        // Map configuration data to active target URLs dynamically
-        const cameraSources = cameraChannels.map(cam => 
-            `https://${cam.host}.services.ncdot.gov:8887/${cam.chan}/index.m3u8?token=${tokenConfig.token}`
+        const cameraSources = cameraChannels.map(cam =>
+            `https://${cam.host}.services.ncdot.gov:8887/${cam.chan}/index.m3u8?token=${tokenConfig[cam.chan]}`
         );
 
         const CAMS_PER_PAGE = 8;
         let currentPage = 0;
         let activeHlsInstances = [];
 
-        const gridEl = document.getElementById('grid');
+        const gridEl  = document.getElementById('grid');
         const prevBtn = document.getElementById('prev-btn');
         const nextBtn = document.getElementById('next-btn');
 
         function destroyCurrentStreams() {
             activeHlsInstances.forEach(hls => { hls.detachMedia(); hls.destroy(); });
             activeHlsInstances = [];
-            gridEl.querySelectorAll('video').forEach(video => {
-                video.pause(); video.src = ""; video.load();
-            });
+            gridEl.querySelectorAll('video').forEach(v => { v.pause(); v.src = ""; v.load(); });
             gridEl.innerHTML = '';
         }
 
         function loadPage(pageNumber) {
             destroyCurrentStreams();
-            const startIndex = pageNumber * CAMS_PER_PAGE;
-            const endIndex = Math.min(startIndex + CAMS_PER_PAGE, cameraSources.length);
-            const pageStreams = cameraSources.slice(startIndex, endIndex);
+            const start = pageNumber * CAMS_PER_PAGE;
+            const pageStreams = cameraSources.slice(start, start + CAMS_PER_PAGE);
 
             pageStreams.forEach(source => {
                 const wrapper = document.createElement('div');
@@ -112,19 +117,18 @@
                 const video = document.createElement('video');
                 video.controls = true; video.autoplay = true; video.muted = true;
                 video.setAttribute('playsinline', 'true');
-
                 wrapper.appendChild(video);
                 gridEl.appendChild(wrapper);
 
                 if (typeof Hls !== 'undefined' && Hls.isSupported()) {
                     const hls = new Hls({ maxBufferLength: 10 });
-                    hls.loadSource(source); hls.attachMedia(video);
+                    hls.loadSource(source);
+                    hls.attachMedia(video);
                     hls.on(Hls.Events.MANIFEST_PARSED, () => {
                         video.play().catch(err => console.log("Autoplay blocked:", err));
                     });
                     activeHlsInstances.push(hls);
-                } 
-                else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
                     video.src = source;
                     video.addEventListener('loadedmetadata', () => {
                         video.play().catch(err => console.log("Autoplay blocked:", err));
@@ -142,8 +146,7 @@
 
         prevBtn.addEventListener('click', () => { if (currentPage > 0) { currentPage--; loadPage(currentPage); } });
         nextBtn.addEventListener('click', () => {
-            const totalPages = Math.ceil(cameraSources.length / CAMS_PER_PAGE);
-            if (currentPage < totalPages - 1) { currentPage++; loadPage(currentPage); }
+            if (currentPage < Math.ceil(cameraSources.length / CAMS_PER_PAGE) - 1) { currentPage++; loadPage(currentPage); }
         });
 
         document.addEventListener("DOMContentLoaded", () => loadPage(currentPage));
