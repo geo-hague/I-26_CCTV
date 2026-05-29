@@ -1,34 +1,11 @@
 const fs   = require('fs');
 const path = require('path');
 
-const TOKEN_API = 'https://vds.nc.insight-atms.com/api/SecureTokenUri/GetSecureTokenUriBySourceId';
-const DRIVENC   = 'https://www.drivenc.gov';
-const UA        = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+const DRIVENC = 'https://www.drivenc.gov';
+const UA      = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-const SOURCE_MAP = [
-    { chan: "chan-5373_l", sourceId: "518",  division: "Division 13" },
-    { chan: "chan-5374_l", sourceId: "519",  division: "Division 13" },
-    { chan: "chan-5375_l", sourceId: "520",  division: "Division 13" },
-    { chan: "chan-5376_l", sourceId: "521",  division: "Division 13" },
-    { chan: "chan-5378_l", sourceId: "523",  division: "Division 13" },
-    { chan: "chan-6332_l", sourceId: "2184", division: "Division 13" },
-    { chan: "chan-5381_l", sourceId: "526",  division: "Division 13" },
-    { chan: "chan-5432_l", sourceId: "577",  division: "Division 14" },
-    { chan: "chan-5440_l", sourceId: "585",  division: "Division 14" },
-    { chan: "chan-5441_l", sourceId: "2132", division: "Division 13" },
-    { chan: "chan-6279_l", sourceId: "2137", division: "Division 13" },
-    { chan: "chan-5442_l", sourceId: "587",  division: "Division 14" },
-    { chan: "chan-5443_l", sourceId: "588",  division: "Division 14" },
-    { chan: "chan-6275_l", sourceId: "2133", division: "Division 13" },
-    { chan: "chan-6276_l", sourceId: "2134", division: "Division 14" },
-    { chan: "chan-6327_l", sourceId: "2180", division: "Division 14" },
-    { chan: "chan-6328_l", sourceId: "2181", division: "Division 14" },
-    { chan: "chan-5444_l", sourceId: "589",  division: "Division 14" },
-    { chan: "chan-5446_l", sourceId: "591",  division: "Division 14" },
-    { chan: "chan-5445_l", sourceId: "590",  division: "Division 14" },
-];
-
-async function scrapeAllTokens() {
+// Pure diagnostic — find the endpoint that issues per-camera UUIDs
+async function findInitEndpoint() {
     const puppeteer = require('puppeteer');
     const browser = await puppeteer.launch({
         headless: true,
@@ -38,125 +15,85 @@ async function scrapeAllTokens() {
     await page.setUserAgent(UA);
     await page.setRequestInterception(true);
 
-    let uuid  = null;
-    let csrfToken = null;
+    // Log every single network request and response
+    const allRequests = [];
 
     page.on('request', req => {
-        if (req.url().includes('GetSecureTokenUri') && req.method() === 'POST') {
-            try {
-                const body    = JSON.parse(req.postData() || '{}');
-                const headers = req.headers();
-                if (body.token && !uuid) {
-                    uuid      = body.token;
-                    csrfToken = headers['__requestverificationtoken'] || null;
-                    console.log(`[UUID] ${uuid}`);
-                    console.log(`[CSRF] ${csrfToken}`);
-                }
-            } catch (_) {}
-        }
+        allRequests.push({ type: 'req', method: req.method(), url: req.url(), body: req.postData()?.slice(0,200) });
         req.continue();
     });
 
-    console.log('Loading drivenc.gov...');
-    await page.goto(DRIVENC, { waitUntil: 'networkidle2', timeout: 90000 });
-    await new Promise(r => setTimeout(r, 4000));
+    page.on('response', async res => {
+        const url = res.url();
+        // Skip noise: images, fonts, maps tiles, analytics
+        if (/\.(png|jpg|gif|svg|woff|woff2|css)(\?|$)/i.test(url)) return;
+        if (url.includes('google') || url.includes('qualtrics') || url.includes('googleapis')) return;
 
-    // Dismiss modal
+        try {
+            const ct   = res.headers()['content-type'] || '';
+            const text = await res.text();
+
+            // Log everything from insight-atms or drivenc regardless
+            if (url.includes('insight-atms') || url.includes('drivenc.gov')) {
+                console.log(`\n[${res.status()}] ${url}`);
+                if (ct.includes('json') || ct.includes('text')) {
+                    console.log(`  ${text.slice(0, 400)}`);
+                }
+            }
+
+            // Flag any response containing a UUID pattern before Show Video is clicked
+            const uuids = text.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi) || [];
+            const validUUIDs = uuids.filter(u => u !== '00000000-0000-0000-0000-000000000000');
+            if (validUUIDs.length > 0 && !url.includes('google') && !url.includes('qualtrics')) {
+                console.log(`\n*** UUID(s) found in response from: ${url}`);
+                console.log(`    ${validUUIDs.join(', ')}`);
+                console.log(`    Body: ${text.slice(0, 300)}`);
+            }
+        } catch (_) {}
+    });
+
+    console.log('Loading drivenc.gov and logging ALL network activity...\n');
+    await page.goto(DRIVENC, { waitUntil: 'networkidle2', timeout: 90000 });
+    await new Promise(r => setTimeout(r, 5000));
+
+    // Dismiss modal then wait without clicking Show Video
     await page.keyboard.press('Escape');
     await new Promise(r => setTimeout(r, 500));
     await page.evaluate(() => {
-        for (const sel of ['.modal .close', '.modal-header .close', 'button[aria-label="Close"]', '.close']) {
-            const el = document.querySelector(sel);
-            if (el) { el.click(); return; }
-        }
-    });
-    await new Promise(r => setTimeout(r, 1000));
-
-    // Click Show Video to get UUID + CSRF token
-    console.log('Waiting for Show Video...');
-    await page.waitForFunction(
-        () => [...document.querySelectorAll('button, a')].some(el => /show\s*video/i.test(el.textContent?.trim())),
-        { timeout: 15000 }
-    );
-    await page.evaluate(() => {
-        const btn = [...document.querySelectorAll('button, a')]
-            .find(el => /show\s*video/i.test(el.textContent?.trim()));
+        const btn = document.querySelector('.modal .close, .modal-header .close, button[aria-label="Close"]');
         if (btn) btn.click();
     });
-    await new Promise(r => setTimeout(r, 3000));
+    await new Promise(r => setTimeout(r, 2000));
 
-    if (!uuid || !csrfToken) {
-        await page.screenshot({ path: 'debug.png' });
-        await browser.close();
-        throw new Error(`Missing: uuid=${!!uuid} csrfToken=${!!csrfToken}`);
-    }
+    // Log the page's JS bundle URLs — the UUID generation logic is in one of them
+    const scripts = await page.evaluate(() =>
+        [...document.querySelectorAll('script[src]')].map(s => s.src)
+    );
+    console.log('\nLoaded scripts:');
+    scripts.forEach(s => console.log(' ', s));
 
-    // Fetch all tokens from browser context including the CSRF header
-    console.log('Fetching all 20 tokens...');
-    const results = await page.evaluate(async (apiUrl, sourceMap, sessionUUID, csrf) => {
-        const tokens = {};
-        for (const cam of sourceMap) {
-            try {
-                const res = await fetch(apiUrl, {
-                    method: 'POST',
-                    credentials: 'include',
-                    headers: {
-                        'Content-Type':                'application/json',
-                        'Accept':                      'application/json',
-                        '__requestverificationtoken':  csrf,
-                    },
-                    body: JSON.stringify({
-                        token:          sessionUUID,
-                        sourceId:       cam.sourceId,
-                        systemSourceId: cam.division,
-                    }),
-                });
-                const text = await res.text();
-                const m = text.match(/token=([a-f0-9]+)/);
-                tokens[cam.chan] = { status: res.status, token: m?.[1] ?? null, raw: text };
-            } catch (e) {
-                tokens[cam.chan] = { status: 0, token: null, raw: e.message };
-            }
+    // Check if the Angular/JS app exposes any camera data on window
+    const windowData = await page.evaluate(() => {
+        const result = {};
+        // Check common Angular/React data stores
+        for (const key of ['__INITIAL_STATE__', '__STORE__', 'appData', 'cameraData', 'cameras', 'vdsData']) {
+            if (window[key]) result[key] = JSON.stringify(window[key]).slice(0, 300);
         }
-        return tokens;
-    }, TOKEN_API, SOURCE_MAP, uuid, csrfToken);
+        // Check Angular root scope if available
+        try {
+            const appEl = document.querySelector('[ng-app], [data-ng-app], app-root, [ng-controller]');
+            if (appEl) {
+                const scope = angular?.element(appEl)?.scope?.();
+                if (scope) result['ngScope'] = JSON.stringify(scope).slice(0, 300);
+            }
+        } catch (_) {}
+        return result;
+    });
+    if (Object.keys(windowData).length > 0) {
+        console.log('\nWindow app data:', JSON.stringify(windowData, null, 2));
+    }
 
     await browser.close();
-
-    const captured = {};
-    for (const [chan, r] of Object.entries(results)) {
-        if (r.token) {
-            captured[chan] = r.token;
-            console.log(`✅ ${chan} → ${r.token.slice(0, 16)}...`);
-        } else {
-            console.warn(`⚠  ${chan} → HTTP ${r.status}: ${r.raw}`);
-        }
-    }
-    return captured;
 }
 
-async function updateIndexHTML(newTokens) {
-    const indexPath = path.join(__dirname, 'index.html');
-    if (!fs.existsSync(indexPath)) throw new Error('index.html not found');
-    let html = fs.readFileSync(indexPath, 'utf8');
-    const regex = /(\/\/ --- START TOKENS ---)[\s\S]*?(\/\/ --- END TOKENS ---)/;
-    if (!regex.test(html)) throw new Error('Anchor comments not found in index.html');
-    const existingMatch = html.match(/const tokenConfig = ({[\s\S]*?});/);
-    let existing = {};
-    if (existingMatch) { try { existing = JSON.parse(existingMatch[1]); } catch (_) {} }
-    const merged = { ...existing, ...newTokens, updated: new Date().toISOString() };
-    html = html.replace(regex,
-        `$1\n        const tokenConfig = ${JSON.stringify(merged, null, 2)};\n        $2`);
-    fs.writeFileSync(indexPath, html, 'utf8');
-    console.log(`\n✅ index.html updated — ${Object.keys(newTokens).length}/20 tokens refreshed.`);
-    if (Object.keys(newTokens).length < 20)
-        console.warn(`⚠  ${20 - Object.keys(newTokens).length} token(s) kept from previous run.`);
-}
-
-async function main() {
-    const tokens = await scrapeAllTokens();
-    if (Object.keys(tokens).length === 0) throw new Error('No tokens captured.');
-    await updateIndexHTML(tokens);
-}
-
-main().catch(err => { console.error('⛔', err.message); process.exit(1); });
+findInitEndpoint().catch(err => { console.error('⛔', err.message); process.exit(1); });
