@@ -5,8 +5,6 @@ const TOKEN_API = 'https://vds.nc.insight-atms.com/api/SecureTokenUri/GetSecureT
 const DRIVENC   = 'https://www.drivenc.gov';
 const UA        = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-// Permanent sourceId map — west to east along I-26
-// Obtained from DevTools inspection; these IDs are stable and won't change
 const SOURCE_MAP = [
     { chan: "chan-5373_l", sourceId: "518",  division: "Division 13" },
     { chan: "chan-5374_l", sourceId: "519",  division: "Division 13" },
@@ -30,7 +28,6 @@ const SOURCE_MAP = [
     { chan: "chan-5445_l", sourceId: "590",  division: "Division 14" },
 ];
 
-// ── Step 1: get a valid session UUID from drivenc.gov via Puppeteer ───────────
 async function getSessionUUID() {
     const puppeteer = require('puppeteer');
     const browser = await puppeteer.launch({
@@ -47,51 +44,112 @@ async function getSessionUUID() {
         if (req.url().includes('GetSecureTokenUri') && req.method() === 'POST') {
             try {
                 const body = JSON.parse(req.postData() || '{}');
-                if (body.token && !uuid) uuid = body.token;
+                if (body.token && !uuid) {
+                    uuid = body.token;
+                    console.log(`[UUID from POST] ${uuid}`);
+                }
             } catch (_) {}
         }
         req.continue();
     });
 
+    console.log('Loading drivenc.gov...');
     await page.goto(DRIVENC, { waitUntil: 'networkidle2', timeout: 90000 });
-    await new Promise(r => setTimeout(r, 2000));
+    console.log('Page loaded. Waiting for JS to settle...');
+    await new Promise(r => setTimeout(r, 5000));
 
-    // Dismiss modal
+    // Dismiss modal — try every method
     await page.keyboard.press('Escape');
-    await new Promise(r => setTimeout(r, 300));
-    const xBtn = await page.evaluate(() => {
-        const btn = document.querySelector('.modal .close, .modal-header .close, button[aria-label="Close"]');
-        if (!btn) return null;
-        const r = btn.getBoundingClientRect();
-        return r.width > 0 ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
-    });
-    if (xBtn) await page.mouse.click(xBtn.x, xBtn.y);
-    await new Promise(r => setTimeout(r, 800));
+    await new Promise(r => setTimeout(r, 500));
 
-    // Click Show Video to trigger a POST and capture the session UUID
-    const btn = await page.evaluate(() => {
-        const el = [...document.querySelectorAll('button, a')]
-            .find(e => /show\s*video/i.test(e.textContent?.trim()));
-        if (!el) return null;
-        const r = el.getBoundingClientRect();
-        return r.width > 0 ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
+    // Click X by coordinate (we know it's around 891, 119 from earlier screenshots)
+    await page.mouse.click(891, 119);
+    await new Promise(r => setTimeout(r, 500));
+
+    // Also try selector-based click
+    await page.evaluate(() => {
+        for (const sel of ['.modal .close', '.modal-header .close', 'button[aria-label="Close"]', '.close']) {
+            const el = document.querySelector(sel);
+            if (el) { el.click(); return; }
+        }
+        // Try clicking Next/OK buttons too
+        const btns = [...document.querySelectorAll('button')];
+        const ok = btns.find(b => /next|ok|got it|close|dismiss/i.test(b.textContent));
+        if (ok) ok.click();
     });
-    if (btn) {
-        await page.mouse.move(btn.x, btn.y);
-        await page.mouse.down(); await new Promise(r => setTimeout(r, 80)); await page.mouse.up();
-        await new Promise(r => setTimeout(r, 2000));
+    await new Promise(r => setTimeout(r, 1000));
+
+    // Find and click Show Video
+    const clicked = await page.evaluate(() => {
+        const btn = [...document.querySelectorAll('button, a')]
+            .find(el => /show\s*video/i.test(el.textContent?.trim()));
+        if (!btn) return false;
+        const r = btn.getBoundingClientRect();
+        if (r.width === 0) return false;
+        btn.click();
+        return true;
+    });
+    console.log(`Show Video DOM click: ${clicked}`);
+    await new Promise(r => setTimeout(r, 500));
+
+    // Also try mouse click at known sidebar position
+    await page.mouse.click(201, 440);
+    await new Promise(r => setTimeout(r, 3000));
+
+    // If POST interception didn't catch UUID, try scanning the JS heap
+    if (!uuid) {
+        console.log('POST not intercepted — scanning JS heap for UUID...');
+        uuid = await page.evaluate(() => {
+            const re = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            // Check Angular/React service instances for a token/UUID field
+            for (const key of Object.getOwnPropertyNames(window)) {
+                try {
+                    const val = window[key];
+                    if (typeof val === 'string' && re.test(val) &&
+                        val !== '00000000-0000-0000-0000-000000000000') return val;
+                    if (val && typeof val === 'object') {
+                        const str = JSON.stringify(val);
+                        const m = str.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+                        if (m && m[0] !== '00000000-0000-0000-0000-000000000000') return m[0];
+                    }
+                } catch (_) {}
+            }
+            return null;
+        });
+        if (uuid) console.log(`[UUID from heap] ${uuid}`);
     }
 
+    // Last resort: call the token API from inside the browser using a fresh UUID
+    // and check if it works (the session cookie may be sufficient)
+    if (!uuid) {
+        console.log('Trying API call from browser context with fresh UUID...');
+        const result = await page.evaluate(async (apiUrl, sourceId, division) => {
+            const testUUID = crypto.randomUUID();
+            const res = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify({ token: testUUID, sourceId, systemSourceId: division }),
+            });
+            return { status: res.status, body: await res.text(), uuid: testUUID };
+        }, TOKEN_API, '518', 'Division 13');
+
+        console.log(`Browser API test → HTTP ${result.status}: ${result.body}`);
+        if (result.status === 200 && result.body.includes('token=')) {
+            // A fresh UUID worked from within the browser context!
+            uuid = result.uuid;
+            console.log(`[UUID works from browser] ${uuid}`);
+        }
+    }
+
+    await page.screenshot({ path: 'debug.png' });
     await browser.close();
 
-    if (!uuid) throw new Error('Session UUID not captured — Show Video button may not have fired.');
-    console.log(`Session UUID: ${uuid}`);
+    if (!uuid) throw new Error('Could not obtain a valid session UUID by any method.');
     return uuid;
 }
 
-// ── Step 2: fetch tokens for all 20 cameras directly from Node ────────────────
 async function fetchAllTokens(uuid) {
-    const tokens = {};
+    const tokens  = {};
     const headers = {
         'Content-Type': 'application/json',
         'Accept':       'application/json',
@@ -103,48 +161,38 @@ async function fetchAllTokens(uuid) {
     for (const cam of SOURCE_MAP) {
         try {
             const res  = await fetch(TOKEN_API, {
-                method: 'POST',
-                headers,
+                method: 'POST', headers,
                 body: JSON.stringify({ token: uuid, sourceId: cam.sourceId, systemSourceId: cam.division }),
             });
             const text = await res.text();
             const m    = text.match(/token=([a-f0-9]+)/);
             if (m) {
                 tokens[cam.chan] = m[1];
-                console.log(`✅ ${cam.chan} (${cam.sourceId}) → ${m[1].slice(0, 16)}...`);
+                console.log(`✅ ${cam.chan} → ${m[1].slice(0,16)}...`);
             } else {
-                console.warn(`⚠ ${cam.chan} (${cam.sourceId}) → HTTP ${res.status}: ${text}`);
+                console.warn(`⚠ ${cam.chan} → HTTP ${res.status}: ${text}`);
             }
-        } catch (e) {
-            console.warn(`⚠ ${cam.chan} → ${e.message}`);
-        }
+        } catch (e) { console.warn(`⚠ ${cam.chan} → ${e.message}`); }
     }
-
     return tokens;
 }
 
-// ── Step 3: write tokens into index.html ─────────────────────────────────────
 async function updateIndexHTML(newTokens) {
     const indexPath = path.join(__dirname, 'index.html');
     if (!fs.existsSync(indexPath)) throw new Error('index.html not found');
-
     let html = fs.readFileSync(indexPath, 'utf8');
     const regex = /(\/\/ --- START TOKENS ---)[\s\S]*?(\/\/ --- END TOKENS ---)/;
     if (!regex.test(html)) throw new Error('Anchor comments not found in index.html');
-
-    // Merge with existing so any un-refreshed tokens are preserved
     const existingMatch = html.match(/const tokenConfig = ({[\s\S]*?});/);
     let existing = {};
     if (existingMatch) { try { existing = JSON.parse(existingMatch[1]); } catch (_) {} }
-
     const merged = { ...existing, ...newTokens, updated: new Date().toISOString() };
     html = html.replace(regex,
         `$1\n        const tokenConfig = ${JSON.stringify(merged, null, 2)};\n        $2`);
-
     fs.writeFileSync(indexPath, html, 'utf8');
-    const n = Object.keys(newTokens).length;
-    console.log(`\n✅ index.html updated — ${n}/20 tokens refreshed.`);
-    if (n < 20) console.warn(`⚠ ${20 - n} token(s) not refreshed — previous values kept.`);
+    console.log(`\n✅ index.html updated — ${Object.keys(newTokens).length}/20 tokens refreshed.`);
+    if (Object.keys(newTokens).length < 20)
+        console.warn(`⚠ ${20 - Object.keys(newTokens).length} token(s) kept from previous run.`);
 }
 
 async function main() {
@@ -154,9 +202,8 @@ async function main() {
     console.log('\nStep 2: Fetching tokens for all 20 cameras...');
     const tokens = await fetchAllTokens(uuid);
 
-    if (Object.keys(tokens).length === 0) {
-        throw new Error('No tokens fetched — the session UUID may have been rejected.');
-    }
+    if (Object.keys(tokens).length === 0)
+        throw new Error('No tokens fetched.');
 
     console.log('\nStep 3: Updating index.html...');
     await updateIndexHTML(tokens);
