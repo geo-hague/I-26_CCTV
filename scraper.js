@@ -38,17 +38,19 @@ async function scrapeAllTokens() {
     await page.setUserAgent(UA);
     await page.setRequestInterception(true);
 
-    let uuid = null;
+    let uuid  = null;
+    let csrfToken = null;
 
-    // Intercept POST to capture UUID and log ALL headers for diagnostics
     page.on('request', req => {
         if (req.url().includes('GetSecureTokenUri') && req.method() === 'POST') {
             try {
-                const body = JSON.parse(req.postData() || '{}');
+                const body    = JSON.parse(req.postData() || '{}');
+                const headers = req.headers();
                 if (body.token && !uuid) {
-                    uuid = body.token;
+                    uuid      = body.token;
+                    csrfToken = headers['__requestverificationtoken'] || null;
                     console.log(`[UUID] ${uuid}`);
-                    console.log(`[headers] ${JSON.stringify(req.headers())}`);
+                    console.log(`[CSRF] ${csrfToken}`);
                 }
             } catch (_) {}
         }
@@ -59,7 +61,7 @@ async function scrapeAllTokens() {
     await page.goto(DRIVENC, { waitUntil: 'networkidle2', timeout: 90000 });
     await new Promise(r => setTimeout(r, 4000));
 
-    // Dismiss modal using selector only — no coordinates
+    // Dismiss modal
     await page.keyboard.press('Escape');
     await new Promise(r => setTimeout(r, 500));
     await page.evaluate(() => {
@@ -70,40 +72,39 @@ async function scrapeAllTokens() {
     });
     await new Promise(r => setTimeout(r, 1000));
 
-    // Wait for Show Video button with a timeout, then click it
-    console.log('Looking for Show Video button...');
-    try {
-        await page.waitForFunction(
-            () => [...document.querySelectorAll('button, a')].some(el => /show\s*video/i.test(el.textContent?.trim())),
-            { timeout: 15000 }
-        );
-        await page.evaluate(() => {
-            const btn = [...document.querySelectorAll('button, a')]
-                .find(el => /show\s*video/i.test(el.textContent?.trim()));
-            if (btn) btn.click();
-        });
-        console.log('Show Video clicked.');
-        await new Promise(r => setTimeout(r, 3000));
-    } catch (_) {
-        console.warn('Show Video button not found after 15s.');
+    // Click Show Video to get UUID + CSRF token
+    console.log('Waiting for Show Video...');
+    await page.waitForFunction(
+        () => [...document.querySelectorAll('button, a')].some(el => /show\s*video/i.test(el.textContent?.trim())),
+        { timeout: 15000 }
+    );
+    await page.evaluate(() => {
+        const btn = [...document.querySelectorAll('button, a')]
+            .find(el => /show\s*video/i.test(el.textContent?.trim()));
+        if (btn) btn.click();
+    });
+    await new Promise(r => setTimeout(r, 3000));
+
+    if (!uuid || !csrfToken) {
         await page.screenshot({ path: 'debug.png' });
-    }
-
-    if (!uuid) {
         await browser.close();
-        throw new Error('Session UUID not captured.');
+        throw new Error(`Missing: uuid=${!!uuid} csrfToken=${!!csrfToken}`);
     }
 
-    // Fetch all 20 tokens from inside the browser with credentials: 'include'
-    console.log('Fetching all 20 tokens from browser context...');
-    const results = await page.evaluate(async (apiUrl, sourceMap, sessionUUID) => {
+    // Fetch all tokens from browser context including the CSRF header
+    console.log('Fetching all 20 tokens...');
+    const results = await page.evaluate(async (apiUrl, sourceMap, sessionUUID, csrf) => {
         const tokens = {};
         for (const cam of sourceMap) {
             try {
                 const res = await fetch(apiUrl, {
                     method: 'POST',
-                    credentials: 'include',   // sends insight-atms cookies
-                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    credentials: 'include',
+                    headers: {
+                        'Content-Type':                'application/json',
+                        'Accept':                      'application/json',
+                        '__requestverificationtoken':  csrf,
+                    },
                     body: JSON.stringify({
                         token:          sessionUUID,
                         sourceId:       cam.sourceId,
@@ -118,7 +119,7 @@ async function scrapeAllTokens() {
             }
         }
         return tokens;
-    }, TOKEN_API, SOURCE_MAP, uuid);
+    }, TOKEN_API, SOURCE_MAP, uuid, csrfToken);
 
     await browser.close();
 
