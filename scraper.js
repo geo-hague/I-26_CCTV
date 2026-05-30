@@ -16,7 +16,7 @@ async function run() {
 
     let liveChannelsData = {};
 
-    // Network sniffer
+    // Network Token Interceptor
     page.on('response', async (response) => {
         const url = response.url();
         if (url.includes('index.m3u8') || url.includes('manifest.m3u8') || url.includes('stream')) {
@@ -43,7 +43,7 @@ async function run() {
     await new Promise(r => setTimeout(r, 6000)); 
     await page.keyboard.press('Escape'); 
 
-    console.log('Processing video rows with strict modal closure tracking...');
+    console.log('Processing video rows with an extended high-delay capture window...');
     
     const totalRows = await page.evaluate(() => document.querySelectorAll('table tbody tr').length);
     console.log(`Processing ${totalRows} data rows sequentially.`);
@@ -67,33 +67,31 @@ async function run() {
         }, i);
 
         if (clicked) {
-            // Give the stream token ample time to manifest over the pipe
-            await new Promise(r => setTimeout(r, 3500));
+            // A generous 20-second wait window per row to ensure slow handshakes settle entirely
+            await new Promise(r => setTimeout(r, 20000));
 
-            // CRITICAL STEP: Close the player immediately to release network pipelines
+            // Close the player modal immediately to reset network channels
             await page.evaluate(() => {
                 const closeElements = [...document.querySelectorAll('button, a, span, .close, [data-dismiss="modal"]')];
                 const closeBtn = closeElements.find(el => {
                     const txt = el.textContent?.trim() || '';
                     return txt.toLowerCase() === 'close' || txt === '×' || el.classList.contains('close');
                 });
-                if (closeBtn) {
-                    closeBtn.click();
-                }
+                if (closeBtn) closeBtn.click();
             });
 
-            // Brief settlement window before the next row selection click
-            await new Promise(r => setTimeout(r, 500));
+            // Settlement padding before the next click
+            await new Promise(r => setTimeout(r, 1000));
         }
     }
 
     await new Promise(r => setTimeout(r, 4000));
     await browser.close();
 
-    // Merge captured tokens to index.html variables
+    // Merge logic for index.html variable syncing
     const indexPath = path.join(__dirname, 'index.html');
     if (!fs.existsSync(indexPath)) {
-        console.error('❌ Missing target index.html layout asset file.');
+        console.error('❌ Missing target index.html layout file.');
         process.exit(1);
     }
 
