@@ -10,34 +10,41 @@
         html, body {
             margin: 0; padding: 0; width: 100%; min-height: 100%;
             background-color: #000; font-family: sans-serif;
-            /* Allow natural momentum scrolling on mobile setups */
             overflow-x: hidden; overflow-y: auto;
         }
         
         .video-grid {
             display: grid;
             width: 100%;
-            /* Calculated screen space minus custom touch padding blocks */
             min-height: 100vh;
             gap: 4px;
             padding: 4px;
         }
 
-        /* Responsive Breakpoints tailored to your specification rules */
-        @media (min-width: 1400px) {
-            /* 1440p optimization: 5 columns */
+        /* --- UPDATED RESPONSIVE BREAKPOINTS --- */
+
+        @media (min-width: 2000px) {
+            /* Ultra-wide displays: 6 columns */
+            .video-grid { grid-template-columns: repeat(6, 1fr); }
+        }
+
+        @media (min-width: 1900px) and (max-width: 1999px) {
+            /* 1440p Monitors (scaled) & High-Res: 5 columns */
             .video-grid { grid-template-columns: repeat(5, 1fr); }
         }
-        @media (min-width: 992px) and (max-width: 1399px) {
-            /* 1080p optimization: 4 columns */
+
+        @media (min-width: 992px) and (max-width: 1899px) {
+            /* 1080p Monitors (1920px wide) are now explicitly locked here: 4 columns */
             .video-grid { grid-template-columns: repeat(4, 1fr); }
         }
+
         @media (min-width: 576px) and (max-width: 991px) {
-            /* Tablets: 2 columns */
+            /* Tablets / Horizontal Mobile: 2 columns */
             .video-grid { grid-template-columns: repeat(2, 1fr); }
         }
+
         @media (max-width: 575px) {
-            /* Mobile Devices: 1 column stack to prevent memory lag */
+            /* Mobile Devices: 1 column vertical stack */
             .video-grid { grid-template-columns: 1fr; }
         }
 
@@ -45,7 +52,7 @@
             position: relative; 
             width: 100%; 
             background: #111; 
-            aspect-ratio: 16 / 9; /* Guarantees layout consistency across resolutions */
+            aspect-ratio: 16 / 9; 
             overflow: hidden;
             border-radius: 2px;
         }
@@ -53,7 +60,7 @@
         video { 
             width: 100%; 
             height: 100%; 
-            object-fit: cover; /* Crops out top/bottom black pillar space entirely */
+            object-fit: cover; 
             display: block; 
         }
         
@@ -68,7 +75,6 @@
         #prev-btn { left: 8px; }
         #next-btn { right: 8px; }
 
-        /* Responsive tweaks for overlay navigation items on mobile */
         @media (max-width: 767px) {
             .nav-btn {
                 padding: 12px 10px;
