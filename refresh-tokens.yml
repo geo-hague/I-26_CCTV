@@ -34,14 +34,35 @@ jobs:
           node -e "
           const puppeteer = require('puppeteer');
           (async () => {
-            const b = await puppeteer.launch({headless:true, args:['--no-sandbox']});
-            const p = await b.newPage();
-            const r = await p.evaluate(async () => {
-              const res = await fetch('https://www.drivenc.gov/Scripts/map/LayerSpecific/myCameraTooltip.min.js?v=26.5.27');
-              return res.text();
-            });
-            console.log(r);
-            await b.close();
+            try {
+              const b = await puppeteer.launch({
+                headless: true, 
+                args: ['--no-sandbox', '--disable-setuid-sandbox']
+              });
+              const p = await b.newPage();
+              
+              // Catch console logs/errors from inside the page
+              p.on('pageerror', err => console.error('Page error:', err));
+              
+              const r = await p.evaluate(async () => {
+                try {
+                  const res = await fetch('https://www.drivenc.gov/Scripts/map/LayerSpecific/myCameraTooltip.min.js?v=26.5.27');
+                  if (!res.ok) return 'HTTP Error: ' + res.status;
+                  return await res.text();
+                } catch (e) {
+                  return 'Fetch failed inside browser: ' + e.message;
+                }
+              });
+              
+              console.log('--- FETCH RESULT START ---');
+              console.log(r);
+              console.log('--- FETCH RESULT END ---');
+              
+              await b.close();
+            } catch (globalError) {
+              console.error('Puppeteer Script Error:', globalError.message);
+              process.exit(1);
+            }
           })();
           "
 
