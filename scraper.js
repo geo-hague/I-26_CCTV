@@ -40,35 +40,33 @@ async function run() {
         }
     });
 
-    // We cycle through index sets (Page 1: start=0, Page 2: start=10, Page 3: start=20)
-    const pageOffsets = [0, 10, 20];
+    // Cycle through index slices to grab the entire length of the state's I-26 collection
+    // Covers rows 0-30 completely to ensure no asset drops off
+    const pageOffsets = [0, 10, 20, 30];
 
     for (const offset of pageOffsets) {
         const targetUrl = `${BASE_LIST_URL}&start=${offset}&length=10`;
         console.log(`\nOpening camera database table list index slice: start=${offset}...`);
         
         await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 90000 });
-        await new Promise(r => setTimeout(r, 3000));
+        await new Promise(r => setTimeout(r, 4000));
 
         // Dismiss blocking overlays
         await page.keyboard.press('Escape');
 
-        // Scrape the buttons on the current page view
-        console.log(`Clicking "Show Video" elements for row profiles on index page...`);
+        // Target every row element on the current dashboard panel view
+        console.log(`Clicking every "Show Video" element on this table view page...`);
         try {
             await page.evaluate(async () => {
-                // Locate every "Show Video" button active in the data table matrix
-                const videoButtons = [...document.querySelectorAll('button, a, span')].filter(el => 
-                    el.textContent?.trim().toLowerCase() === 'show video'
-                );
-
-                console.log(`Found ${videoButtons.length} action targets on this view row segment.`);
+                const elements = [...document.querySelectorAll('table tbody tr button, table tbody tr a, table tbody tr span')];
+                const videoButtons = elements.filter(el => el.textContent?.trim().toLowerCase() === 'show video');
                 
-                // Sequentially trigger them to populate the network stream safely
+                console.log(`Found ${videoButtons.length} total video buttons on this slice page.`);
+                
+                // Programmatically click every button with a small delay to record manifestations safely
                 for (const btn of videoButtons) {
                     btn.click();
-                    // Brief programmatic rest step inside browser layer to prevent asset congestion
-                    await new Promise(r => setTimeout(r, 1200)); 
+                    await new Promise(r => setTimeout(r, 1500)); 
                 }
             });
             
