@@ -23,72 +23,36 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Install Puppeteer
-        run: npm install puppeteer
-
-      - name: Read myCameraTooltip source
+      # Explicitly install puppeteer dependencies required for headless Linux environments
+      - name: Install Dependencies
         run: |
-          node -e "
-          const puppeteer = require('puppeteer');
-          (async () => {
-            try {
-              const b = await puppeteer.launch({
-                headless: true, 
-                // Fix #1: Ignore SSL/TLS issues often found in CI environments
-                ignoreHTTPSErrors: true,
-                args: [
-                  '--no-sandbox', 
-                  '--disable-setuid-sandbox',
-                  '--disable-web-security' // Bypasses CORS constraints
-                ]
-              });
-              const p = await b.newPage();
-              
-              // Fix #2: Mask the headless bot footprint
-              await p.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-              
-              console.log('Navigating directly to source file...');
-              
-              // Fix #3: Navigate directly to the file instead of running page.evaluate(fetch)
-              const response = await p.goto('https://www.drivenc.gov/Scripts/map/LayerSpecific/myCameraTooltip.min.js?v=26.5.27', {
-                waitUntil: 'networkidle0',
-                timeout: 30000
-              });
-              
-              console.log('--- FETCH RESULT START ---');
-              if (response) {
-                console.log('Status:', response.status());
-                const content = await response.text();
-                console.log(content.substring(0, 1000)); // Prints first 1000 characters to keep logs clean
-              } else {
-                console.log('No response received.');
-              }
-              console.log('--- FETCH RESULT END ---');
-              
-              await b.close();
-            } catch (globalError) {
-              console.error('Puppeteer Script Error:', globalError.message);
-              process.exit(1);
-            }
-          })();
-          "
+          npm install puppeteer
 
+      # Run your precise paginated list-based scraper script
       - name: Fetch Fresh Tokens and Update index.html
         run: node scraper.js
 
-      - name: Upload debug screenshots
+      # Keep this step active to archive any local debugging captures if the script misbehaves
+      - name: Upload Debug Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: debug-screenshots
           path: |
-            debug.png
-            debug-before-click.png
+            *.png
+          if-no-files-found: ignore
 
-      - name: Commit and Push
+      # Securely commit modifications back to your main repository workspace
+      - name: Commit and Push Updates
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          # Only stage and commit if index.html actually changed
           git add index.html
-          git diff-index --quiet HEAD || git commit -m "Automated Token Update [skip ci]"
-          git push
+          if ! git diff-index --quiet HEAD; then
+            git commit -m "Automated Token Update [skip ci]"
+            git push
+          else
+            echo "No token modifications detected. Workspace clear."
+          fi
