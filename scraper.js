@@ -47,6 +47,9 @@ async function run() {
     for (let pageNum = 1; pageNum <= totalPagesToProcess; pageNum++) {
         console.log(`\nProcessing Table Page #${pageNum}...`);
 
+        // Extra verification step: Hard sleep to give any slow DOM animations a chance to rest
+        await new Promise(r => setTimeout(r, 2000));
+
         console.log(`Clicking every "Show Video" element on this page...`);
         try {
             await page.evaluate(async () => {
@@ -57,7 +60,8 @@ async function run() {
                 
                 for (const btn of videoButtons) {
                     btn.click();
-                    await new Promise(r => setTimeout(r, 2000)); // Standard window for stream manifestation
+                    // Keep interaction stable to avoid choking the response pipeline
+                    await new Promise(r => setTimeout(r, 2200)); 
                 }
             });
             await new Promise(r => setTimeout(r, 2000));
@@ -68,9 +72,10 @@ async function run() {
         if (pageNum < totalPagesToProcess) {
             console.log('Advancing to next page via native UI Pagination Controls...');
             
-            const currentFirstRowText = await page.evaluate(() => {
-                const row = document.querySelector('table tbody tr');
-                return row ? (row.textContent || '') : '';
+            // Track the text signature of the current table info label (e.g. "Showing 1 to 10 of...")
+            const currentTableInfoText = await page.evaluate(() => {
+                const infoEl = document.querySelector('.dataTables_info, [id*="info" i], .pagination-info');
+                return infoEl ? (infoEl.textContent || '') : '';
             });
 
             const nextClicked = await page.evaluate(() => {
@@ -88,26 +93,29 @@ async function run() {
             });
 
             if (!nextClicked) {
-                console.log('⚠️ Could not find a "Next" button. Breaking loop early.');
+                console.log('走 ⚠️ Could not find a "Next" button. Breaking loop early.');
                 break;
             }
 
+            // EXPLICIT SYNC GATING: Wait specifically until the page info marker text flips to the next block
             try {
                 await page.waitForFunction(
-                    (oldText) => {
-                        const row = document.querySelector('table tbody tr');
-                        if (!row) return false;
-                        const text = row.textContent || '';
-                        return text !== oldText && !text.includes('Loading');
+                    (oldInfoString) => {
+                        const currentInfoEl = document.querySelector('.dataTables_info, [id*="info" i], .pagination-info');
+                        if (!currentInfoEl) return true; // Fallback if element vanishes
+                        const text = currentInfoEl.textContent || '';
+                        return text !== oldInfoString && !text.includes('Loading');
                     },
-                    { timeout: 8000 },
-                    currentFirstRowText
+                    { timeout: 10000 },
+                    currentTableInfoText
                 );
-                console.log('Data switch detected successfully. Waiting for DOM elements to fully settle...');
-                // Critical Fix: Pause execution to let old page elements completely unmount from memory 
-                await new Promise(r => setTimeout(r, 3500)); 
+                console.log('Pagination index shift detected. Waiting for row states to swap completely...');
+                
+                // Allow a generous structural pause for rows to tear down and rebuild
+                await new Promise(r => setTimeout(r, 4000)); 
             } catch (timeoutErr) {
-                console.log('⏱️ Note: Table swap wait timed out. Continuing...');
+                console.log('⏱️ Note: Table swap wait timed out. Forcing structural rest interval...');
+                await new Promise(r => setTimeout(r, 5000));
             }
         }
     }
