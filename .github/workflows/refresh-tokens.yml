@@ -26,9 +26,6 @@ jobs:
       - name: Install Puppeteer
         run: npm install puppeteer
 
-      - name: Fetch Fresh Tokens and Update index.html
-        run: node scraper.js
-
       - name: Read myCameraTooltip source
         run: |
           node -e "
@@ -75,6 +72,9 @@ jobs:
             }
           })();
           "
+
+      - name: Fetch Fresh Tokens and Update index.html
+        run: node scraper.js
 
       - name: Upload debug screenshots
         if: always()
