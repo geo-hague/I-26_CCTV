@@ -1,7 +1,7 @@
 const fs   = require('fs');
 const path = require('path');
 
-// FORCE LENGTH TO 50: This loads all I-26 cameras onto a single page, killing pagination completely
+// Using your confirmed length=50 URL that displays all your cameras on one page
 const TARGET_URL = 'https://www.drivenc.gov/cctv?start=0&length=50&filters%5B0%5D%5Bi%5D=3&filters%5B0%5D%5Bs%5D=I-26&order%5Bi%5D=1&order%5Bdir%5D=asc';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
@@ -12,12 +12,12 @@ async function run() {
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-web-security'],
     });
     const page = await browser.newPage();
-    await page.setViewport({ width: 1440, height: 2000 }); // Extra tall viewport to see the whole list
+    await page.setViewport({ width: 1440, height: 3000 }); // Tall viewport
     await page.setUserAgent(UA);
 
     let liveChannelsData = {};
 
-    // 1. Intercept stream metadata from the video requests
+    // Intercept stream tokens over the network pipe
     page.on('response', async (response) => {
         const url = response.url();
         if (url.includes('index.m3u8') || url.includes('manifest.m3u8')) {
@@ -39,39 +39,65 @@ async function run() {
         }
     });
 
-    console.log('Opening entire camera database table list (All entries maximized)...');
+    console.log('Opening camera database list (length=50)...');
     await page.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 90000 });
-    await new Promise(r => setTimeout(r, 6000)); // Solid load buffer window
-    await page.keyboard.press('Escape'); // Clear any random modal popups
+    await new Promise(r => setTimeout(r, 6000)); 
+    await page.keyboard.press('Escape'); 
 
-    console.log('Clicking every "Show Video" element down the entire master column...');
+    console.log('Processing camera rows systematically...');
     try {
-        await page.evaluate(async () => {
-            const elements = [...document.querySelectorAll('table tbody tr button, table tbody tr a, table tbody tr span')];
-            const videoButtons = elements.filter(el => el.textContent?.trim().toLowerCase() === 'show video');
-            
-            console.log(`Found ${videoButtons.length} total active camera rows on this page.`);
-            
-            for (const btn of videoButtons) {
-                // Scroll the element into view so lazy-rendering scripts activate it perfectly
-                btn.scrollIntoView({ block: 'center' });
-                btn.click();
-                await new Promise(r => setTimeout(r, 2200)); // Clear request pipeline safely
-            }
+        // Get the total number of rows first
+        const rowCount = await page.evaluate(() => {
+            return document.querySelectorAll('table tbody tr').length;
         });
+        console.log(`Found ${rowCount} total data rows on the screen.`);
+
+        // Loop through rows one by one from the main thread so we can handle open/close pacing securely
+        for (let i = 0; i < rowCount; i++) {
+            await page.evaluate(async (rowIndex) => {
+                const rows = document.querySelectorAll('table tbody tr');
+                const currentRow = rows[rowIndex];
+                if (!currentRow) return;
+
+                const btn = currentRow.querySelector('button, a, span');
+                if (btn && btn.textContent?.trim().toLowerCase() === 'show video') {
+                    btn.scrollIntoView({ block: 'center' });
+                    btn.click();
+                }
+            }, i);
+
+            // Wait 3.5 seconds for the stream request to safely fire and register
+            await new Promise(r => setTimeout(r, 3500));
+
+            // CRITICAL STEP: Close the active video player popup/modal to clear network bandwidth before clicking the next camera
+            await page.evaluate(() => {
+                // Look for common close buttons ("Close", "X", or modal dismiss attributes)
+                const closeButtons = [...document.querySelectorAll('button, a, span')];
+                const closeBtn = closeButtons.find(el => 
+                    el.textContent?.trim().toLowerCase() === 'close' || 
+                    el.textContent?.trim() === '×' ||
+                    el.classList.contains('close') ||
+                    el.getAttribute('data-dismiss') === 'modal'
+                );
+                if (closeBtn) {
+                    closeBtn.click();
+                }
+            });
+
+            // Brief pause after closing to let the DOM settle
+            await new Promise(r => setTimeout(r, 500));
+        }
         
-        // Final wait to let the last few network packages drop in
-        await new Promise(r => setTimeout(r, 5000));
     } catch (err) {
         console.log(`Warning during comprehensive click sequence:`, err.message);
     }
 
     await browser.close();
 
-    // 2. Modifying index.html Workspace Contents
+    // 2. Modifying index.html Contents
     const indexPath = path.join(__dirname, 'index.html');
     if (!fs.existsSync(indexPath)) {
-        console.error('❌ Missing target index.html layout asset file.');
+        console.error('❌ Missing target index.html asset file.');
         process.exit(1);
     }
 
