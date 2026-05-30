@@ -8,25 +8,74 @@
     <style>
         * { box-sizing: border-box; }
         html, body {
-            margin: 0; padding: 0; width: 100%; height: 100%;
-            background-color: #000; overflow: hidden; font-family: sans-serif;
+            margin: 0; padding: 0; width: 100%; min-height: 100%;
+            background-color: #000; font-family: sans-serif;
+            /* Allow natural momentum scrolling on mobile setups */
+            overflow-x: hidden; overflow-y: auto;
         }
+        
         .video-grid {
-            display: grid; grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
-            width: 100%; height: 100%; gap: 2px;
+            display: grid;
+            width: 100%;
+            /* Calculated screen space minus custom touch padding blocks */
+            min-height: 100vh;
+            gap: 4px;
+            padding: 4px;
         }
-        .video-wrapper { position: relative; width: 100%; height: 100%; background: #111; }
-        video { width: 100%; height: 100%; object-fit: contain; display: block; }
+
+        /* Responsive Breakpoints tailored to your specification rules */
+        @media (min-width: 1400px) {
+            /* 1440p optimization: 5 columns */
+            .video-grid { grid-template-columns: repeat(5, 1fr); }
+        }
+        @media (min-width: 992px) and (max-width: 1399px) {
+            /* 1080p optimization: 4 columns */
+            .video-grid { grid-template-columns: repeat(4, 1fr); }
+        }
+        @media (min-width: 576px) and (max-width: 991px) {
+            /* Tablets: 2 columns */
+            .video-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+        @media (max-width: 575px) {
+            /* Mobile Devices: 1 column stack to prevent memory lag */
+            .video-grid { grid-template-columns: 1fr; }
+        }
+
+        .video-wrapper { 
+            position: relative; 
+            width: 100%; 
+            background: #111; 
+            aspect-ratio: 16 / 9; /* Guarantees layout consistency across resolutions */
+            overflow: hidden;
+            border-radius: 2px;
+        }
+        
+        video { 
+            width: 100%; 
+            height: 100%; 
+            object-fit: cover; /* Crops out top/bottom black pillar space entirely */
+            display: block; 
+        }
+        
         .nav-btn {
             position: fixed; top: 50%; transform: translateY(-50%);
-            background: rgba(0, 0, 0, 0.6); color: #fff; border: 1px solid rgba(255, 255, 255, 0.3);
-            padding: 20px 15px; font-size: 24px; cursor: pointer; z-index: 10;
-            transition: background 0.2s, opacity 0.2s; user-select: none; border-radius: 4px;
+            background: rgba(0, 0, 0, 0.75); color: #fff; border: 1px solid rgba(255, 255, 255, 0.4);
+            padding: 18px 14px; font-size: 22px; cursor: pointer; z-index: 10;
+            transition: background 0.2s, opacity 0.2s; user-select: none; border-radius: 6px;
         }
-        .nav-btn:hover { background: rgba(255, 255, 255, 0.2); }
+        .nav-btn:hover { background: rgba(255, 255, 255, 0.25); }
         .nav-btn.hidden { display: none; }
-        #prev-btn { left: 10px; }
-        #next-btn { right: 10px; }
+        #prev-btn { left: 8px; }
+        #next-btn { right: 8px; }
+
+        /* Responsive tweaks for overlay navigation items on mobile */
+        @media (max-width: 767px) {
+            .nav-btn {
+                padding: 12px 10px;
+                font-size: 16px;
+                background: rgba(0, 0, 0, 0.85);
+            }
+        }
     </style>
 </head>
 <body>
@@ -37,27 +86,27 @@
     <script>
         // --- START TOKENS ---
         const tokenConfig = {
-  "chan-5373_l": "c0d748dfd5029f1bc3fd65bb329263d77afc294c43def29015ca73c114e53dc8",
-  "chan-5374_l": "1335f9d52a57e0af31b983bf4e8e308822938c84b698beb3bb4892857a2503b1",
-  "chan-5375_l": "9f17805fcd292c8b743c952234bc8ee971f916b9a1d462b159f7be64e54d1495",
-  "chan-5376_l": "36b49f370b3a289794fffeca492b06af25e942f2534d8f52a56a1b9b2666c8a9",
-  "chan-5378_l": "79b6cf40f435c85eed9d044ee54ce31ed3746933fe057ed7bad4cf0e7a1ee591",
-  "chan-6332_l": "8fe8b71d4e0068fea9bca417e5717924c9a01889fc596addab052eff4836cf29",
-  "chan-5381_l": "7c7f01c91ae89fc05d4a25693212d9be5400da8a1dce6d90fbaa3104c2e1ab48",
-  "chan-5432_l": "ce359f94e2c037f8b807ef9f2e1e41420a5c52903ca5e74be11660246e04086c",
-  "chan-5440_l": "5beb001224d21787f677f201fb63593e7da84f5438b561da58cb242c62d89fb7",
-  "chan-5441_l": "22cc40acc2a53c2474af46d76015a84afe62e57e21e4605b056be52c26f882ed",
-  "chan-6279_l": "77768fbd43886ce22110cb9f106726c9fd854ecf948af42e03241079d69e1c08",
-  "chan-5442_l": "8b03e9686255b7838882c0de03034d8bc96d3beab9c4c4d587aab64ef791a47d",
-  "chan-5443_l": "7b8a9cf27edbfe49a7d3e11bead29495a8043b9db2643ffde393dc03c458f0cd",
-  "chan-6275_l": "bad850debb04808700da3ef76dbd5f944748889ac4d30c870ffa242775abfc11",
-  "chan-6276_l": "2d1ba770ff784301317cadbe548c4574a905e620845325c3740aa7a986c9dc1d",
-  "chan-6327_l": "d49265103a907149b15ab9d582f038db808f54227c99d410ad07db62ea1dc4fe",
-  "chan-6328_l": "846905a72042959ea1797ed97a9adb829fd0ed078380a77d6302a11fee1cd76d",
-  "chan-5444_l": "1030a707038e84e889d6ed8a6fec56964cc8a23c38e7f90571f04691e19ac621",
-  "chan-5446_l": "5b8bdc08264052f6e8e9524e2da1ab45bc5c7260b777eea3488eff818560d446",
-  "chan-5445_l": "7add152e4cac5133e003449d28811001b28c882997bb0f54631d96450d125302",
-  "updated": "2026-05-30 15:28:03 UTC"
+  "chan-5373_l": "6c5b4f8a-9b6a-4ff1-a6a6-df746cc199c1",
+  "chan-5374_l": "0869eaae-f054-4ce3-afaa-27dd487a48e5",
+  "chan-5375_l": "d129bcdc-152d-49c8-899b-a872cd51b211",
+  "chan-5376_l": "671f56ab-216f-45af-b63d-736648a22218",
+  "chan-5378_l": "c55039e8-2241-4f95-b1be-bb5e3cf8e255",
+  "chan-6332_l": "26bb65db-ea33-4f49-838c-552141b61d6d",
+  "chan-5381_l": "aa8e1f51-c675-4ff6-9972-b2d70417ed7a",
+  "chan-5432_l": "9ec66cf2-798e-4f78-a951-d91ee62c850e",
+  "chan-5440_l": "146acaf5-309e-4a12-a0ed-557e89a60a4c",
+  "chan-5441_l": "c6a301e9-b677-4d4f-846b-8276fa7a7aaa",
+  "chan-6279_l": "0f066e55-9eab-42c0-ab3b-37b1dcc89ffd",
+  "chan-5442_l": "f24a3470-48e3-46cb-a9be-b9f988d5f45d",
+  "chan-5443_l": "9f147632-50d0-49e2-bb32-3a70de22604c",
+  "chan-6275_l": "000531ae-5662-4c95-8457-71e68ab4a984",
+  "chan-6276_l": "74db05c3-958e-4b38-9cbe-9e3d5efdf510",
+  "chan-6327_l": "d27517b8-ea08-484b-9545-0acb45174d6a",
+  "chan-6328_l": "b76c366a-3b05-4049-8d6a-a5b00d4ce446",
+  "chan-5444_l": "b1d3779e-afca-445d-97a8-6449d6717016",
+  "chan-5446_l": "af6dccbf-bd1b-478e-9d02-5ad4a6d06089",
+  "chan-5445_l": "7c773bdf-6c66-4fc1-b245-06909dfde12d",
+  "updated": "Initial Setup"
 };
         // --- END TOKENS ---
 
@@ -91,7 +140,10 @@
             `https://${cam.host}.services.ncdot.gov:8887/${cam.chan}/index.m3u8?token=${tokenConfig[cam.chan]}`
         );
 
-        const CAMS_PER_PAGE = 8;
+        // Dynamically throttle active streams to prevent crashing phone browser engines
+        const isMobile = window.innerWidth < 768;
+        const CAMS_PER_PAGE = isMobile ? 4 : 10; 
+        
         let currentPage = 0;
         let activeHlsInstances = [];
 
@@ -108,6 +160,10 @@
 
         function loadPage(pageNumber) {
             destroyCurrentStreams();
+            
+            // Return viewport screen to top when turning pages
+            window.scrollTo({ top: 0, behavior: 'instant' });
+
             const start = pageNumber * CAMS_PER_PAGE;
             const pageStreams = cameraSources.slice(start, start + CAMS_PER_PAGE);
 
@@ -115,13 +171,18 @@
                 const wrapper = document.createElement('div');
                 wrapper.className = 'video-wrapper';
                 const video = document.createElement('video');
-                video.controls = true; video.autoplay = true; video.muted = true;
+                
+                video.muted = true;
+                video.autoplay = true;
+                video.controls = true;
                 video.setAttribute('playsinline', 'true');
+                video.setAttribute('webkit-playsinline', 'true');
+                
                 wrapper.appendChild(video);
                 gridEl.appendChild(wrapper);
 
                 if (typeof Hls !== 'undefined' && Hls.isSupported()) {
-                    const hls = new Hls({ maxBufferLength: 10 });
+                    const hls = new Hls({ maxBufferLength: 6, lowLatencyMode: true });
                     hls.loadSource(source);
                     hls.attachMedia(video);
                     hls.on(Hls.Events.MANIFEST_PARSED, () => {
@@ -129,6 +190,7 @@
                     });
                     activeHlsInstances.push(hls);
                 } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                    // Direct stream routing loop fallback for native Safari mobile views
                     video.src = source;
                     video.addEventListener('loadedmetadata', () => {
                         video.play().catch(err => console.log("Autoplay blocked:", err));
