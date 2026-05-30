@@ -11,16 +11,15 @@ async function run() {
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-web-security'],
     });
     const page = await browser.newPage();
-    await page.setViewport({ width: 1440, height: 3000 }); 
+    await page.setViewport({ width: 1440, height: 4000 }); 
     await page.setUserAgent(UA);
 
     let liveChannelsData = {};
 
-    // Broad Network Sniffer: Catches all video playlist formats (.m3u8, .mp4, manifests, etc.)
+    // Network sniffer
     page.on('response', async (response) => {
         const url = response.url();
-        
-        if (url.includes('m3u8') || url.includes('mp4') || url.includes('manifest') || url.includes('stream')) {
+        if (url.includes('index.m3u8') || url.includes('manifest.m3u8') || url.includes('stream')) {
             const chanMatch = url.match(/(chan-[0-9a-zA-Z_]+)/i);
             if (chanMatch) {
                 const detectedChan = chanMatch[1].toLowerCase();
@@ -44,34 +43,57 @@ async function run() {
     await new Promise(r => setTimeout(r, 6000)); 
     await page.keyboard.press('Escape'); 
 
-    console.log('Clicking every row action down the entire table matrix...');
-    await page.evaluate(async () => {
-        const rows = [...document.querySelectorAll('table tbody tr')];
-        console.log(`Found ${rows.length} total interactive table rows.`);
+    console.log('Processing video rows with strict modal closure tracking...');
+    
+    const totalRows = await page.evaluate(() => document.querySelectorAll('table tbody tr').length);
+    console.log(`Processing ${totalRows} data rows sequentially.`);
 
-        for (let i = 0; i < rows.length; i++) {
-            const row = rows[i];
+    for (let i = 0; i < totalRows; i++) {
+        const clicked = await page.evaluate(async (rowIndex) => {
+            const rows = document.querySelectorAll('table tbody tr');
+            const targetRow = rows[rowIndex];
+            if (!targetRow) return false;
+
+            targetRow.scrollIntoView({ block: 'center', behavior: 'instant' });
             
-            // Finds the primary interactive element in the row, regardless of what text it has
-            const clickableElement = row.querySelector('button, a, span, .btn');
+            const cellElements = [...targetRow.querySelectorAll('button, a, span, td')];
+            const actionBtn = cellElements.find(el => el.textContent?.trim().toLowerCase() === 'show video');
             
-            if (clickableElement) {
-                clickableElement.scrollIntoView({ block: 'center' });
-                clickableElement.click();
-                
-                // Give the stream token ample time to hit the network pipeline
-                await new Promise(r => setTimeout(r, 3500));
+            if (actionBtn) {
+                actionBtn.click();
+                return true;
             }
+            return false;
+        }, i);
+
+        if (clicked) {
+            // Give the stream token ample time to manifest over the pipe
+            await new Promise(r => setTimeout(r, 3500));
+
+            // CRITICAL STEP: Close the player immediately to release network pipelines
+            await page.evaluate(() => {
+                const closeElements = [...document.querySelectorAll('button, a, span, .close, [data-dismiss="modal"]')];
+                const closeBtn = closeElements.find(el => {
+                    const txt = el.textContent?.trim() || '';
+                    return txt.toLowerCase() === 'close' || txt === '×' || el.classList.contains('close');
+                });
+                if (closeBtn) {
+                    closeBtn.click();
+                }
+            });
+
+            // Brief settlement window before the next row selection click
+            await new Promise(r => setTimeout(r, 500));
         }
-    });
+    }
 
     await new Promise(r => setTimeout(r, 4000));
     await browser.close();
 
-    // Merge values back to index.html workspace
+    // Merge captured tokens to index.html variables
     const indexPath = path.join(__dirname, 'index.html');
     if (!fs.existsSync(indexPath)) {
-        console.error('❌ Missing target index.html file.');
+        console.error('❌ Missing target index.html layout asset file.');
         process.exit(1);
     }
 
@@ -79,19 +101,17 @@ async function run() {
     let dynamicUpdateCounter = 0;
 
     console.log('\nProcessing Captured Stream Values and merging to index.html...');
-    
     for (const [channelName, freshData] of Object.entries(liveChannelsData)) {
         const numMatch = channelName.match(/\d+/);
         if (!numMatch) continue;
         const numId = numMatch[0];
 
-        // Flexible regex to match single/double quotes and case variations (_l vs _L)
         const looserTokenRegex = new RegExp(`(['"]chan-${numId}_[lL]['"]\\s*:\\s*['"])[^'"]*(['"])`, 'g');
         const looserHostRegex = new RegExp(`({\\s*host\\s*:\\s*['"])[^'"]*(['"]\\s*,\\s*chan\\s*:\\s*['"]chan-${numId}_[lL]['"])`, 'g');
 
         if (looserTokenRegex.test(htmlContent)) {
             htmlContent = htmlContent.replace(looserTokenRegex, `$1${freshData.token}$2`);
-            console.log(`✅ Synced Token for Camera Number: ${numId} ➔ ${freshData.token || '[None]'}`);
+            console.log(`✅ Synced Token for Camera Number: ${numId} ➔ ${freshData.token}`);
             dynamicUpdateCounter++;
         }
 
