@@ -1,32 +1,8 @@
 const fs   = require('fs');
 const path = require('path');
 
-const TOKEN_API = 'https://vds.nc.insight-atms.com/api/SecureTokenUri/GetSecureTokenUriBySourceId';
-const DRIVENC   = 'https://www.drivenc.gov';
-const UA        = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-
-const SOURCE_MAP = [
-    { chan: "chan-5373_l", sourceId: "518",  division: "Division 13" },
-    { chan: "chan-5374_l", sourceId: "519",  division: "Division 13" },
-    { chan: "chan-5375_l", sourceId: "520",  division: "Division 13" },
-    { chan: "chan-5376_l", sourceId: "521",  division: "Division 13" },
-    { chan: "chan-5378_l", sourceId: "523",  division: "Division 13" },
-    { chan: "chan-6332_l", sourceId: "2184", division: "Division 13" },
-    { chan: "chan-5381_l", sourceId: "526",  division: "Division 13" },
-    { chan: "chan-5432_l", sourceId: "577",  division: "Division 14" },
-    { chan: "chan-5440_l", sourceId: "585",  division: "Division 14" },
-    { chan: "chan-5441_l", sourceId: "2132", division: "Division 13" },
-    { chan: "chan-6279_l", sourceId: "2137", division: "Division 13" },
-    { chan: "chan-5442_l", sourceId: "587",  division: "Division 14" },
-    { chan: "chan-5443_l", sourceId: "588",  division: "Division 14" },
-    { chan: "chan-6275_l", sourceId: "2133", division: "Division 13" },
-    { chan: "chan-6276_l", sourceId: "2134", division: "Division 14" },
-    { chan: "chan-6327_l", sourceId: "2180", division: "Division 14" },
-    { chan: "chan-6328_l", sourceId: "2181", division: "Division 14" },
-    { chan: "chan-5444_l", sourceId: "589",  division: "Division 14" },
-    { chan: "chan-5446_l", sourceId: "591",  division: "Division 14" },
-    { chan: "chan-5445_l", sourceId: "590",  division: "Division 14" },
-];
+const DRIVENC = 'https://www.drivenc.gov';
+const UA      = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 async function run() {
     const puppeteer = require('puppeteer');
@@ -37,11 +13,41 @@ async function run() {
     const page = await browser.newPage();
     await page.setUserAgent(UA);
 
+    // Array to capture potential target response payloads
+    let capturedPayloads = [];
+
+    // Listen to network responses in real-time
+    page.on('response', async (response) => {
+        const url = response.url();
+        const type = response.request().resourceType();
+
+        // Target API traffic (XHR/Fetch requests) matching common patterns
+        if (type === 'xhr' || type === 'fetch' || url.includes('Camera') || url.includes('Map')) {
+            try {
+                const status = response.status();
+                if (status === 200) {
+                    const text = await response.text();
+                    
+                    // Look for indicators of camera lists or tokens inside the response text
+                    if (text.includes('camera') || text.includes('token') || text.includes('SourceId')) {
+                        console.log(`[Network Intercepted] Captured matching endpoint: ${url.substring(0, 90)}...`);
+                        capturedPayloads.push({
+                            url: url,
+                            data: text
+                        });
+                    }
+                }
+            } catch (e) {
+                // Silently ignore responses that can't be read (binary files, images, etc.)
+            }
+        }
+    });
+
     console.log('Loading drivenc.gov...');
     await page.goto(DRIVENC, { waitUntil: 'networkidle2', timeout: 90000 });
     await new Promise(r => setTimeout(r, 4000));
 
-    // Dismiss overlay modal
+    // Clear initial popups
     await page.keyboard.press('Escape');
     await page.evaluate(() => {
         const btn = document.querySelector('.modal .close, .modal-header .close, button[aria-label="Close"]');
@@ -49,51 +55,33 @@ async function run() {
     });
     await new Promise(r => setTimeout(r, 1000));
 
-    // Enable cameras layer explicitly to trigger data parsing structures
     console.log('Activating Cameras Layer...');
     await page.evaluate(() => {
         const all = [...document.querySelectorAll('label, span, div, input')];
         const el = all.find(e => e.textContent?.trim() === 'Cameras');
         if (el) el.click();
     });
-    await new Promise(r => setTimeout(r, 5000));
 
-    // Target the newly discovered window structure
-    console.log('Extracting camera configuration tokens via window context...');
-    const extractedData = await page.evaluate(() => {
-        // Fallback checks for the explicit configurations found inside myCameraTooltip
-        return {
-            myCameras: window.MyCameras || null,
-            mapComp: window.MapComp ? Object.keys(window.MapComp) : null
-        };
-    });
+    console.log('Waiting 8 seconds to capture active API responses...');
+    await new Promise(r => setTimeout(r, 8000));
 
-    console.log('-------------------------------------------');
-    console.log('Extracted window.MyCameras:', JSON.stringify(extractedData.myCameras, null, 2));
-    console.log('-------------------------------------------');
-
-    // If data is collected, process and match against your SOURCE_MAP
-    if (extractedData.myCameras) {
-        const tokenMapping = {};
+    console.log('Processing Captured Network Traffic...');
+    if (capturedPayloads.length === 0) {
+        console.log('❌ No matching JSON API strings passed through the network logs.');
+    } else {
+        console.log(`\nFound ${capturedPayloads.length} potential background data streams.`);
         
-        // Loop through the source engine payload structure discovered
-        extractedData.myCameras.forEach(group => {
-            if (group.cameras && Array.isArray(group.cameras)) {
-                group.cameras.forEach(cam => {
-                    if (cam.cameraSiteId) {
-                        tokenMapping[cam.cameraSiteId] = group.id || cam.token;
-                    }
-                });
+        // Let's print out snippets of what we caught so we can locate the tokens
+        capturedPayloads.forEach((payload, index) => {
+            console.log(`\n--- Payload #${index + 1} Source URL: ${payload.url} ---`);
+            console.log(payload.data.substring(0, 600)); // Print first 600 characters
+            
+            // If it smells like a JSON string containing token blocks, save it out!
+            if (payload.data.includes('token') || payload.data.includes('SecureToken')) {
+                fs.writeFileSync(`captured-tokens-${index}.json`, payload.data);
+                console.log(`💾 Saved target stream data payload to captured-tokens-${index}.json`);
             }
         });
-
-        console.log('Processed token mapping table matches:');
-        console.dir(tokenMapping);
-        
-        // Write out your fresh payload configuration update tracking file
-        fs.writeFileSync('tokens.json', JSON.stringify(tokenMapping, null, 2));
-    } else {
-        console.log('⚠️ window.MyCameras was empty. Forcing full DOM extraction profile.');
     }
 
     await browser.close();
