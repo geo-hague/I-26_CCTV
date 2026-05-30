@@ -4,6 +4,30 @@ const path = require('path');
 const DRIVENC = 'https://www.drivenc.gov';
 const UA      = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
+// Your defined targets
+const SOURCE_MAP = [
+    { chan: "chan-5373_l", sourceId: "518",  division: "Division 13" },
+    { chan: "chan-5374_l", sourceId: "519",  division: "Division 13" },
+    { chan: "chan-5375_l", sourceId: "520",  division: "Division 13" },
+    { chan: "chan-5376_l", sourceId: "521",  division: "Division 13" },
+    { chan: "chan-5378_l", sourceId: "523",  division: "Division 13" },
+    { chan: "chan-6332_l", sourceId: "2184", division: "Division 13" },
+    { chan: "chan-5381_l", sourceId: "526",  division: "Division 13" },
+    { chan: "chan-5432_l", sourceId: "577",  division: "Division 14" },
+    { chan: "chan-5440_l", sourceId: "585",  division: "Division 14" },
+    { chan: "chan-5441_l", sourceId: "2132", division: "Division 13" },
+    { chan: "chan-6279_l", sourceId: "2137", division: "Division 13" },
+    { chan: "chan-5442_l", sourceId: "587",  division: "Division 14" },
+    { chan: "chan-5443_l", sourceId: "588",  division: "Division 14" },
+    { chan: "chan-6275_l", sourceId: "2133", division: "Division 13" },
+    { chan: "chan-6276_l", sourceId: "2134", division: "Division 14" },
+    { chan: "chan-6327_l", sourceId: "2180", division: "Division 14" },
+    { chan: "chan-6328_l", sourceId: "2181", division: "Division 14" },
+    { chan: "chan-5444_l", sourceId: "589",  division: "Division 14" },
+    { chan: "chan-5446_l", sourceId: "591",  division: "Division 14" },
+    { chan: "chan-5445_l", sourceId: "590",  division: "Division 14" },
+];
+
 async function run() {
     const puppeteer = require('puppeteer');
     const browser = await puppeteer.launch({
@@ -13,33 +37,30 @@ async function run() {
     const page = await browser.newPage();
     await page.setUserAgent(UA);
 
-    // Array to capture potential target response payloads
-    let capturedPayloads = [];
+    // Track active live stream paths captured: { sourceId: "https://...videoUrl..." }
+    let liveCameraUrls = {};
 
-    // Listen to network responses in real-time
+    // 1. Intercept network pipeline background data
     page.on('response', async (response) => {
         const url = response.url();
-        const type = response.request().resourceType();
-
-        // Target API traffic (XHR/Fetch requests) matching common patterns
-        if (type === 'xhr' || type === 'fetch' || url.includes('Camera') || url.includes('Map')) {
-            try {
-                const status = response.status();
-                if (status === 200) {
-                    const text = await response.text();
+        try {
+            if (url.includes('GetUserCameras')) {
+                const text = await response.text();
+                const json = JSON.parse(text);
+                
+                if (json && json.data && Array.isArray(json.data)) {
+                    console.log(`[Parser] Successfully intercepted ${json.data.length} live platform cameras.`);
                     
-                    // Look for indicators of camera lists or tokens inside the response text
-                    if (text.includes('camera') || text.includes('token') || text.includes('SourceId')) {
-                        console.log(`[Network Intercepted] Captured matching endpoint: ${url.substring(0, 90)}...`);
-                        capturedPayloads.push({
-                            url: url,
-                            data: text
-                        });
-                    }
+                    json.data.forEach(cam => {
+                        if (cam.sourceId && cam.images && cam.images[0] && cam.images[0].videoUrl) {
+                            // Map via the real string ID
+                            liveCameraUrls[cam.sourceId] = cam.images[0].videoUrl;
+                        }
+                    });
                 }
-            } catch (e) {
-                // Silently ignore responses that can't be read (binary files, images, etc.)
             }
+        } catch (e) {
+            console.error('Network parsing warning:', e.message);
         }
     });
 
@@ -47,44 +68,50 @@ async function run() {
     await page.goto(DRIVENC, { waitUntil: 'networkidle2', timeout: 90000 });
     await new Promise(r => setTimeout(r, 4000));
 
-    // Clear initial popups
+    // Clear UI overlays
     await page.keyboard.press('Escape');
-    await page.evaluate(() => {
-        const btn = document.querySelector('.modal .close, .modal-header .close, button[aria-label="Close"]');
-        if (btn) btn.click();
-    });
-    await new Promise(r => setTimeout(r, 1000));
 
-    console.log('Activating Cameras Layer...');
-    await page.evaluate(() => {
-        const all = [...document.querySelectorAll('label, span, div, input')];
-        const el = all.find(e => e.textContent?.trim() === 'Cameras');
-        if (el) el.click();
-    });
+    console.log('Monitoring dynamic data transmissions for live URLs...');
+    await new Promise(r => setTimeout(r, 6000)); // Wait for GetUserCameras background call to wrap up
+    await browser.close();
 
-    console.log('Waiting 8 seconds to capture active API responses...');
-    await new Promise(r => setTimeout(r, 8000));
-
-    console.log('Processing Captured Network Traffic...');
-    if (capturedPayloads.length === 0) {
-        console.log('❌ No matching JSON API strings passed through the network logs.');
-    } else {
-        console.log(`\nFound ${capturedPayloads.length} potential background data streams.`);
-        
-        // Let's print out snippets of what we caught so we can locate the tokens
-        capturedPayloads.forEach((payload, index) => {
-            console.log(`\n--- Payload #${index + 1} Source URL: ${payload.url} ---`);
-            console.log(payload.data.substring(0, 600)); // Print first 600 characters
-            
-            // If it smells like a JSON string containing token blocks, save it out!
-            if (payload.data.includes('token') || payload.data.includes('SecureToken')) {
-                fs.writeFileSync(`captured-tokens-${index}.json`, payload.data);
-                console.log(`💾 Saved target stream data payload to captured-tokens-${index}.json`);
-            }
-        });
+    // 2. Modifying index.html File Layer
+    const indexPath = path.join(__dirname, 'index.html');
+    if (!fs.existsSync(indexPath)) {
+        console.error('❌ index.html not found in workspace root.');
+        process.exit(1);
     }
 
-    await browser.close();
+    let htmlContent = fs.readFileSync(indexPath, 'utf8');
+    let dynamicUpdateCounter = 0;
+
+    // Cross-reference live API URLs with your SOURCE_MAP definitions
+    SOURCE_MAP.forEach(camera => {
+        const freshUrl = liveCameraUrls[camera.sourceId];
+        
+        if (freshUrl) {
+            // Find existing video source tags containing your specific channel name
+            // matches patterns like: src="https://.../chan-5373_l/..." or src="OLD_URL"
+            const escapedChan = camera.chan.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+            const urlRegex = new RegExp(`src=["']https?:\/\/[^"']*${escapedChan}[^"']*["']`, 'gi');
+
+            if (urlRegex.test(htmlContent)) {
+                htmlContent = htmlContent.replace(urlRegex, `src="${freshUrl}"`);
+                console.log(`✅ Updated HTML Link for ${camera.chan} → ${freshUrl}`);
+                dynamicUpdateCounter++;
+            } else {
+                console.log(`⚠️ Match structural fallback: Found live data for ${camera.chan} but couldn't find matching pattern inside index.html`);
+            }
+        }
+    });
+
+    // 3. Save updates
+    if (dynamicUpdateCounter > 0) {
+        fs.writeFileSync(indexPath, htmlContent, 'utf8');
+        console.log(`\n🎉 Success! Synchronized ${dynamicUpdateCounter} video stream links directly in index.html.`);
+    } else {
+        console.log('\n⚠️ Process finished but no active matches were updated. Ensure your index.html source matches structural elements (e.g., includes the chan string code like chan-5373_l).');
+    }
 }
 
-run().catch(err => { console.error('⛔ Error running scraper:', err.message); process.exit(1); });
+run().catch(err => { console.error('⛔ Critical script crash:', err); process.exit(1); });
