@@ -1,7 +1,8 @@
 const fs   = require('fs');
 const path = require('path');
 
-const TARGET_URL = 'https://www.drivenc.gov/cctv?start=0&length=10&filters%5B0%5D%5Bi%5D=3&filters%5B0%5D%5Bs%5D=I-26&order%5Bi%5D=1&order%5Bdir%5D=asc';
+// FORCE LENGTH TO 50: This loads all I-26 cameras onto a single page, killing pagination completely
+const TARGET_URL = 'https://www.drivenc.gov/cctv?start=0&length=50&filters%5B0%5D%5Bi%5D=3&filters%5B0%5D%5Bs%5D=I-26&order%5Bi%5D=1&order%5Bdir%5D=asc';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 async function run() {
@@ -11,11 +12,12 @@ async function run() {
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-web-security'],
     });
     const page = await browser.newPage();
-    await page.setViewport({ width: 1440, height: 900 });
+    await page.setViewport({ width: 1440, height: 2000 }); // Extra tall viewport to see the whole list
     await page.setUserAgent(UA);
 
     let liveChannelsData = {};
 
+    // 1. Intercept stream metadata from the video requests
     page.on('response', async (response) => {
         const url = response.url();
         if (url.includes('index.m3u8') || url.includes('manifest.m3u8')) {
@@ -37,91 +39,36 @@ async function run() {
         }
     });
 
-    console.log('Opening camera database table list directly...');
+    console.log('Opening entire camera database table list (All entries maximized)...');
     await page.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 90000 });
-    await new Promise(r => setTimeout(r, 5000));
-    await page.keyboard.press('Escape');
+    await new Promise(r => setTimeout(r, 6000)); // Solid load buffer window
+    await page.keyboard.press('Escape'); // Clear any random modal popups
 
-    const totalPagesToProcess = 3;
-
-    for (let pageNum = 1; pageNum <= totalPagesToProcess; pageNum++) {
-        console.log(`\nProcessing Table Page #${pageNum}...`);
-
-        // Extra verification step: Hard sleep to give any slow DOM animations a chance to rest
-        await new Promise(r => setTimeout(r, 2000));
-
-        console.log(`Clicking every "Show Video" element on this page...`);
-        try {
-            await page.evaluate(async () => {
-                const elements = [...document.querySelectorAll('table tbody tr button, table tbody tr a, table tbody tr span')];
-                const videoButtons = elements.filter(el => el.textContent?.trim().toLowerCase() === 'show video');
-                
-                console.log(`Found ${videoButtons.length} total active video buttons on this view.`);
-                
-                for (const btn of videoButtons) {
-                    btn.click();
-                    // Keep interaction stable to avoid choking the response pipeline
-                    await new Promise(r => setTimeout(r, 2200)); 
-                }
-            });
-            await new Promise(r => setTimeout(r, 2000));
-        } catch (err) {
-            console.log(`Warning during row clicks on page ${pageNum}:`, err.message);
-        }
-
-        if (pageNum < totalPagesToProcess) {
-            console.log('Advancing to next page via native UI Pagination Controls...');
+    console.log('Clicking every "Show Video" element down the entire master column...');
+    try {
+        await page.evaluate(async () => {
+            const elements = [...document.querySelectorAll('table tbody tr button, table tbody tr a, table tbody tr span')];
+            const videoButtons = elements.filter(el => el.textContent?.trim().toLowerCase() === 'show video');
             
-            // Track the text signature of the current table info label (e.g. "Showing 1 to 10 of...")
-            const currentTableInfoText = await page.evaluate(() => {
-                const infoEl = document.querySelector('.dataTables_info, [id*="info" i], .pagination-info');
-                return infoEl ? (infoEl.textContent || '') : '';
-            });
-
-            const nextClicked = await page.evaluate(() => {
-                const buttons = [...document.querySelectorAll('button, a, li, span')];
-                const nextBtn = buttons.find(el => 
-                    el.textContent?.trim().toLowerCase() === 'next' || 
-                    el.getAttribute('aria-label')?.toLowerCase().includes('next')
-                );
-
-                if (nextBtn) {
-                    nextBtn.click();
-                    return true;
-                }
-                return false;
-            });
-
-            if (!nextClicked) {
-                console.log('走 ⚠️ Could not find a "Next" button. Breaking loop early.');
-                break;
+            console.log(`Found ${videoButtons.length} total active camera rows on this page.`);
+            
+            for (const btn of videoButtons) {
+                // Scroll the element into view so lazy-rendering scripts activate it perfectly
+                btn.scrollIntoView({ block: 'center' });
+                btn.click();
+                await new Promise(r => setTimeout(r, 2200)); // Clear request pipeline safely
             }
-
-            // EXPLICIT SYNC GATING: Wait specifically until the page info marker text flips to the next block
-            try {
-                await page.waitForFunction(
-                    (oldInfoString) => {
-                        const currentInfoEl = document.querySelector('.dataTables_info, [id*="info" i], .pagination-info');
-                        if (!currentInfoEl) return true; // Fallback if element vanishes
-                        const text = currentInfoEl.textContent || '';
-                        return text !== oldInfoString && !text.includes('Loading');
-                    },
-                    { timeout: 10000 },
-                    currentTableInfoText
-                );
-                console.log('Pagination index shift detected. Waiting for row states to swap completely...');
-                
-                // Allow a generous structural pause for rows to tear down and rebuild
-                await new Promise(r => setTimeout(r, 4000)); 
-            } catch (timeoutErr) {
-                console.log('⏱️ Note: Table swap wait timed out. Forcing structural rest interval...');
-                await new Promise(r => setTimeout(r, 5000));
-            }
-        }
+        });
+        
+        // Final wait to let the last few network packages drop in
+        await new Promise(r => setTimeout(r, 5000));
+    } catch (err) {
+        console.log(`Warning during comprehensive click sequence:`, err.message);
     }
 
     await browser.close();
 
+    // 2. Modifying index.html Workspace Contents
     const indexPath = path.join(__dirname, 'index.html');
     if (!fs.existsSync(indexPath)) {
         console.error('❌ Missing target index.html layout asset file.');
