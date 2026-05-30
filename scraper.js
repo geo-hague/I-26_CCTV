@@ -1,8 +1,9 @@
 const fs   = require('fs');
 const path = require('path');
 
-const DRIVENC = 'https://www.drivenc.gov';
-const UA      = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+// Target the raw list component filtered to I-26 cameras
+const BASE_LIST_URL = 'https://www.drivenc.gov/cctv?filters%5B0%5D%5Bi%5D=3&filters%5B0%5D%5Bs%5D=I-26&order%5Bi%5D=1&order%5Bdir%5D=asc';
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 async function run() {
     const puppeteer = require('puppeteer');
@@ -11,80 +12,73 @@ async function run() {
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-web-security'],
     });
     const page = await browser.newPage();
+    await page.setViewport({ width: 1440, height: 900 });
     await page.setUserAgent(UA);
 
-    // Track data mapped dynamically by channel name: { "chan-5373_l": { host: "cfase02", token: "..." } }
     let liveChannelsData = {};
 
-    // 1. Intercept network data
+    // 1. Intercept stream metadata from the video requests
     page.on('response', async (response) => {
         const url = response.url();
-        try {
-            if (url.includes('GetUserCameras')) {
-                const text = await response.text();
-                const json = JSON.parse(text);
-                
-                if (json && json.data && Array.isArray(json.data)) {
-                    console.log(`[Network Intercept] Processing ${json.data.length} live map stream configurations.`);
-                    
-                    json.data.forEach(cam => {
-                        if (cam.images && Array.isArray(cam.images)) {
-                            cam.images.forEach(img => {
-                                if (img.videoUrl) {
-                                    const rawUrl = img.videoUrl;
-                                    
-                                    // Extract the channel identifier name directly from the streaming path URL string
-                                    // Handles pulling out segments like "chan-5373_l"
-                                    const chanMatch = rawUrl.match(/(chan-[0-9a-zA-Z_]+)/i);
-                                    
-                                    if (chanMatch) {
-                                        const detectedChan = chanMatch[1].toLowerCase();
-                                        
-                                        try {
-                                            const parsedUrl = new URL(rawUrl);
-                                            const hostPrefix = parsedUrl.hostname.split('.')[0];
-                                            const tokenVal = parsedUrl.searchParams.get('token') || '';
+        // Catch any video manifest paths generated when clicking "Show Video"
+        if (url.includes('index.m3u8') || url.includes('manifest.m3u8')) {
+            const chanMatch = url.match(/(chan-[0-9a-zA-Z_]+)/i);
+            if (chanMatch) {
+                const detectedChan = chanMatch[1].toLowerCase();
+                try {
+                    const parsedUrl = new URL(url);
+                    const hostPrefix = parsedUrl.hostname.split('.')[0];
+                    const tokenVal = parsedUrl.searchParams.get('token') || '';
 
-                                            liveChannelsData[detectedChan] = {
-                                                host: hostPrefix,
-                                                token: tokenVal
-                                            };
-                                        } catch (urlErr) {
-                                            const hostMatch = rawUrl.match(/https?:\/\/([^.]+)\./i);
-                                            const tokenMatch = rawUrl.match(/[?&]token=([^&]+)/i);
-                                            if (hostMatch) {
-                                                liveChannelsData[detectedChan] = {
-                                                    host: hostMatch[1],
-                                                    token: tokenMatch ? tokenMatch[1] : ''
-                                                };
-                                            }
-                                        }
-                                    }
-                                }
-                            });
-                        }
-                    });
-                }
+                    liveChannelsData[detectedChan] = {
+                        host: hostPrefix,
+                        token: tokenVal
+                    };
+                    console.log(`[Captured] ${detectedChan} via network pipeline connection.`);
+                } catch (e) {}
             }
-        } catch (e) { /* Safe catch for asset frame streams */ }
+        }
     });
 
-    console.log('Opening target dashboard...');
-    await page.goto(DRIVENC, { waitUntil: 'networkidle2', timeout: 90000 });
-    await new Promise(r => setTimeout(r, 4000));
+    // We cycle through index sets (Page 1: start=0, Page 2: start=10, Page 3: start=20)
+    const pageOffsets = [0, 10, 20];
 
-    // Dismiss overlay elements
-    await page.keyboard.press('Escape');
+    for (const offset of pageOffsets) {
+        const targetUrl = `${BASE_LIST_URL}&start=${offset}&length=10`;
+        console.log(`\nOpening camera database table list index slice: start=${offset}...`);
+        
+        await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 90000 });
+        await new Promise(r => setTimeout(r, 3000));
 
-    console.log('Activating Layer Layout Modules...');
-    await page.evaluate(() => {
-        const elements = [...document.querySelectorAll('label, span, div, input')];
-        const targetLayer = elements.find(e => e.textContent?.trim() === 'Cameras');
-        if (targetLayer) targetLayer.click();
-    });
+        // Dismiss blocking overlays
+        await page.keyboard.press('Escape');
 
-    console.log('Capturing streaming routing maps...');
-    await new Promise(r => setTimeout(r, 8000));
+        // Scrape the buttons on the current page view
+        console.log(`Clicking "Show Video" elements for row profiles on index page...`);
+        try {
+            await page.evaluate(async () => {
+                // Locate every "Show Video" button active in the data table matrix
+                const videoButtons = [...document.querySelectorAll('button, a, span')].filter(el => 
+                    el.textContent?.trim().toLowerCase() === 'show video'
+                );
+
+                console.log(`Found ${videoButtons.length} action targets on this view row segment.`);
+                
+                // Sequentially trigger them to populate the network stream safely
+                for (const btn of videoButtons) {
+                    btn.click();
+                    // Brief programmatic rest step inside browser layer to prevent asset congestion
+                    await new Promise(r => setTimeout(r, 1200)); 
+                }
+            });
+            
+            // Allow processing buffer windows to settle down completely per frame batch
+            await new Promise(r => setTimeout(r, 4000));
+        } catch (err) {
+            console.log(`Interaction block handling warning at slice index ${offset}:`, err.message);
+        }
+    }
+
     await browser.close();
 
     // 2. Modifying index.html Workspace Contents
@@ -97,27 +91,25 @@ async function run() {
     let htmlContent = fs.readFileSync(indexPath, 'utf8');
     let dynamicUpdateCounter = 0;
 
-    // Scan your actual live channels caught over the network pipe 
-    // and replace them one-by-one straight into your file layout configuration tables
+    console.log('\nProcessing Captured Stream Values and merging to index.html...');
     for (const [channelName, freshData] of Object.entries(liveChannelsData)) {
         
-        // Match token parameter entry line configurations
+        // Update the token property block values inside tokenConfig table block
         const tokenRegex = new RegExp(`("${channelName}"\\s*:\\s*")[^"]*(")`, 'gi');
         if (tokenRegex.test(htmlContent)) {
             htmlContent = htmlContent.replace(tokenRegex, `$1${freshData.token}$2`);
-            console.log(`✅ Synced Token for: ${channelName} ➔ ${freshData.token || '[Empty/None Needed]'}`);
+            console.log(`✅ Synced Token for: ${channelName} ➔ ${freshData.token || '[None]'}`);
             dynamicUpdateCounter++;
         }
 
-        // Match host array element configuration structures
+        // Synchronize routing host subdomains dynamically
         const hostRegex = new RegExp(`({\\s*host\\s*:\\s*")[^"]*("\\s*,\\s*chan\\s*:\\s*"${channelName}")`, 'gi');
         if (hostRegex.test(htmlContent)) {
             htmlContent = htmlContent.replace(hostRegex, `$1${freshData.host}$2`);
-            console.log(`🔗 Routed Host for: ${channelName} ➔ ${freshData.host}`);
         }
     }
 
-    // Stamp active update tracking parameters
+    // Append standard update tracking marker tags
     const timestampStr = new Date().toISOString().replace('T', ' ').substring(0, 19) + ' UTC';
     htmlContent = htmlContent.replace(/"updated"\s*:\s*"[^"]*"/g, `"updated": "${timestampStr}"`);
 
@@ -126,7 +118,7 @@ async function run() {
         fs.writeFileSync(indexPath, htmlContent, 'utf8');
         console.log(`\n🎉 Success! Synchronized ${dynamicUpdateCounter} target camera tokens inside index.html variables.`);
     } else {
-        console.log('\n⚠️ Map complete, but none of the channels intercepted from this region match your specific dashboard layout channel IDs.');
+        console.log('\n❌ Synchronization loop concluded but no target markers were written. Ensure your index.html list array keys are correctly matched.');
     }
 }
 
