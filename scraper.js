@@ -1,7 +1,8 @@
 const fs   = require('fs');
 const path = require('path');
 
-const BASE_LIST_URL = 'https://www.drivenc.gov/cctv?filters%5B0%5D%5Bi%5D=3&filters%5B0%5D%5Bs%5D=I-26&order%5Bi%5D=1&order%5Bdir%5D=asc';
+// Open the initial page directly, then we will use UI buttons to turn pages
+const TARGET_URL = 'https://www.drivenc.gov/cctv?start=0&length=10&filters%5B0%5D%5Bi%5D=3&filters%5B0%5D%5Bs%5D=I-26&order%5Bi%5D=1&order%5Bdir%5D=asc';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 async function run() {
@@ -38,60 +39,83 @@ async function run() {
         }
     });
 
-    // Check pages 1, 2, and 3 cleanly
-    const pageOffsets = [0, 10, 20];
-    let lastPageFirstRowText = "";
+    console.log('Opening camera database table list directly...');
+    await page.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 90000 });
+    await new Promise(r => setTimeout(r, 5000));
+    await page.keyboard.press('Escape'); // Clear overlays
 
-    for (const offset of pageOffsets) {
-        const targetUrl = `${BASE_LIST_URL}&start=${offset}&length=10`;
-        console.log(`\nOpening camera database table list index slice: start=${offset}...`);
-        
-        await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 90000 });
-        
-        // Anti-race condition logic: Wait for table contents to change from the previous page iteration
-        try {
-            await page.waitForFunction(
-                (previousText) => {
-                    const firstRow = document.querySelector('table tbody tr');
-                    if (!firstRow) return false;
-                    const text = firstRow.textContent || '';
-                    return text !== previousText && !text.includes('Loading');
-                },
-                { timeout: 10000 },
-                lastPageFirstRowText
-            );
-        } catch (timeoutErr) {
-            console.log('⏱️ Note: Table contents didn\'t change or loaded quickly.');
-        }
+    // We will loop through 3 pages total using UI pagination buttons
+    const totalPagesToProcess = 3;
 
-        // Cache the current first row signature text before interactions clear it
-        lastPageFirstRowText = await page.evaluate(() => {
-            const row = document.querySelector('table tbody tr');
-            return row ? (row.textContent || '') : '';
-        });
+    for (let pageNum = 1; pageNum <= totalPagesToProcess; pageNum++) {
+        console.log(`\nProcessing Table Page #${pageNum}...`);
 
-        // Dismiss modal overlays if any appeared
-        await page.keyboard.press('Escape');
-        await new Promise(r => setTimeout(r, 1000));
-
-        // Click every single available video button on this freshly loaded page view
-        console.log(`Clicking every "Show Video" element on this table view page...`);
+        // Click every single available video button on the current view
+        console.log(`Clicking every "Show Video" element on this page...`);
         try {
             await page.evaluate(async () => {
                 const elements = [...document.querySelectorAll('table tbody tr button, table tbody tr a, table tbody tr span')];
                 const videoButtons = elements.filter(el => el.textContent?.trim().toLowerCase() === 'show video');
                 
-                console.log(`Found ${videoButtons.length} total video buttons on this slice page.`);
+                console.log(`Found ${videoButtons.length} total active video buttons on this view.`);
                 
                 for (const btn of videoButtons) {
                     btn.click();
-                    await new Promise(r => setTimeout(r, 1800)); // Slightly increased delay to guarantee network capture
+                    await new Promise(r => setTimeout(r, 1800)); // Clear request pipeline safely
                 }
             });
-            
-            await new Promise(r => setTimeout(r, 3000));
+            await new Promise(r => setTimeout(r, 2000));
         } catch (err) {
-            console.log(`Interaction block handling warning at slice index ${offset}:`, err.message);
+            console.log(`Warning during row clicks on page ${pageNum}:`, err.message);
+        }
+
+        // If we still have pages left to process, find and click the native "Next" button
+        if (pageNum < totalPagesToProcess) {
+            console.log('Advancing to next page via native UI Pagination Controls...');
+            
+            // Capture the text signature of the first row to detect when the page contents swap
+            const currentFirstRowText = await page.evaluate(() => {
+                const row = document.querySelector('table tbody tr');
+                return row ? (row.textContent || '') : '';
+            });
+
+            const nextClicked = await page.evaluate(() => {
+                // Find pagination links (Commonly "Next", "next", or buttons with specific pagination attributes)
+                const buttons = [...document.querySelectorAll('button, a, li, span')];
+                const nextBtn = buttons.find(el => 
+                    el.textContent?.trim().toLowerCase() === 'next' || 
+                    el.getAttribute('aria-label')?.toLowerCase().includes('next')
+                );
+
+                if (nextBtn) {
+                    nextBtn.click();
+                    return true;
+                }
+                return false;
+            });
+
+            if (!nextClicked) {
+                console.log('⚠️ Could not find a "Next" button. Breaking loop early.');
+                break;
+            }
+
+            // Wait until the first row changes, ensuring the new dataset has fully rendered in place
+            try {
+                await page.waitForFunction(
+                    (oldText) => {
+                        const row = document.querySelector('table tbody tr');
+                        if (!row) return false;
+                        const text = row.textContent || '';
+                        return text !== oldText && !text.includes('Loading');
+                    },
+                    { timeout: 8000 },
+                    currentFirstRowText
+                );
+                console.log('Data switch detected successfully.');
+                await new Promise(r => setTimeout(r, 2000));
+            } catch (timeoutErr) {
+                console.log('⏱️ Note: Table swap wait timed out. Continuing...');
+            }
         }
     }
 
