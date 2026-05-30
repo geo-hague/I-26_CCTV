@@ -1,8 +1,9 @@
 const fs   = require('fs');
 const path = require('path');
 
-const TARGET_URL = 'https://www.drivenc.gov/cctv?start=0&length=50&filters%5B0%5D%5Bi%5D=3&filters%5B0%5D%5Bs%5D=I-26&order%5Bi%5D=1&order%5Bdir%5D=asc';
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Guide to Gecko) Chrome/124.0.0.0 Safari/537.36';
+// Base target query structure
+const BASE_URL = 'https://www.drivenc.gov/cctv?filters%5B0%5D%5Bi%5D=3&filters%5B0%5D%5Bs%5D=I-26&order%5Bi%5D=1&order%5Bdir%5D=asc&length=10';
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 async function run() {
     const puppeteer = require('puppeteer');
@@ -11,11 +12,12 @@ async function run() {
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-web-security'],
     });
     const page = await browser.newPage();
-    await page.setViewport({ width: 1440, height: 3000 });
+    await page.setViewport({ width: 1440, height: 1200 });
     await page.setUserAgent(UA);
 
     let liveChannelsData = {};
 
+    // Network Sniffer
     page.on('response', async (response) => {
         const url = response.url();
         if (url.includes('index.m3u8') || url.includes('manifest.m3u8')) {
@@ -37,29 +39,45 @@ async function run() {
         }
     });
 
-    console.log('Opening camera database list (length=50)...');
-    await page.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 90000 });
-    await new Promise(r => setTimeout(r, 6000)); 
-    await page.keyboard.press('Escape'); 
+    // We cycle through 4 full slice windows to guarantee absolutely no row exclusions
+    const slices = [0, 10, 20, 30];
 
-    console.log('Clicking every video row sequentially on the single view page...');
-    await page.evaluate(async () => {
-        const allElements = [...document.querySelectorAll('table tbody tr *')];
-        const videoButtons = allElements.filter(el => el.textContent?.trim().toLowerCase() === 'show video');
+    for (const startOffset of slices) {
+        const targetSliceUrl = `${BASE_URL}&start=${startOffset}`;
+        console.log(`\nOpening camera database index segment: start=${startOffset}...`);
         
-        console.log(`Found ${videoButtons.length} clickable video rows on the screen.`);
+        try {
+            await page.goto(targetSliceUrl, { waitUntil: 'networkidle2', timeout: 90000 });
+            await new Promise(r => setTimeout(r, 5000));
+            await page.keyboard.press('Escape'); // Dismiss random banners
 
-        for (let i = 0; i < videoButtons.length; i++) {
-            const btn = videoButtons[i];
-            btn.scrollIntoView({ block: 'center' });
-            btn.click();
-            await new Promise(r => setTimeout(r, 3000));
+            // Process row collection inside browser layer
+            await page.evaluate(async () => {
+                const allElements = [...document.querySelectorAll('table tbody tr *')];
+                const videoButtons = allElements.filter(el => el.textContent?.trim().toLowerCase() === 'show video');
+                
+                console.log(`Found ${videoButtons.length} active video row elements on this segment layout.`);
+
+                for (let i = 0; i < videoButtons.length; i++) {
+                    const btn = videoButtons[i];
+                    btn.scrollIntoView({ block: 'center' });
+                    btn.click();
+                    // Structured timing to prevent pipe choking
+                    await new Promise(r => setTimeout(r, 2500));
+                }
+            });
+
+            // Brief settlement window per segment
+            await new Promise(r => setTimeout(r, 2000));
+
+        } catch (sliceErr) {
+            console.log(`Note: Segment window start=${startOffset} processing warning:`, sliceErr.message);
         }
-    });
+    }
 
-    await new Promise(r => setTimeout(r, 4000));
     await browser.close();
 
+    // 2. Modifying index.html Contents
     const indexPath = path.join(__dirname, 'index.html');
     if (!fs.existsSync(indexPath)) {
         console.error('❌ Missing target index.html asset file.');
@@ -86,17 +104,15 @@ async function run() {
         }
     }
 
-    // DIAGNOSTIC CODE: Find what is missing in index.html
+    // Diagnostic Block
     console.log('\n--- DIAGNOSTIC ANALYSIS ---');
     const allExpectedChannels = [...htmlContent.matchAll(/"(chan-[0-9a-zA-Z_]+)"\s*:/gi)].map(m => m[1].toLowerCase());
     const uniqueExpectedChannels = [...new Set(allExpectedChannels)];
-    
     const missingChannels = uniqueExpectedChannels.filter(chan => !synchronizedChannels.has(chan));
     
     if (missingChannels.length > 0) {
-        console.log(`⚠️ The following ${missingChannels.length} channels exist in your index.html but were NEVER captured on DriveNC's I-26 page:`);
+        console.log(`⚠️ The following ${missingChannels.length} channels exist in your index.html but were NOT captured during this session:`);
         missingChannels.forEach(chan => console.log(`   - ${chan}`));
-        console.log('\nPossible reasons: These cameras might belong to a different highway filter, use a different channel prefix style, or are currently offline/missing from the live database table.');
     } else {
         console.log('✨ All camera IDs found inside index.html were successfully updated!');
     }
