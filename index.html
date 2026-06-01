@@ -8,36 +8,42 @@
     <style>
         * { box-sizing: border-box; }
         html, body {
-            margin: 0; padding: 0; width: 100%; min-height: 100%;
+            margin: 0; padding: 0; width: 100%; height: 100%;
             background-color: #000; font-family: sans-serif;
-            overflow-x: hidden; overflow-y: auto;
+            overflow: hidden; /* Prevents all accidental scrolling */
         }
         
         .video-grid {
             display: grid;
             width: 100%;
-            min-height: 100vh;
+            height: 100vh;
             gap: 6px; 
             padding: 6px;
         }
 
-        /* --- EXPLICIT HARD-LOCKED LAYOUTS --- */
+        /* --- HARD-LOCKED VIEWPORT GRID MATCHING --- */
 
-        /* Standard & Large Desktop Layout -> 3 Columns (Targeting a clean 3x3 grid) */
+        /* Desktop Layout -> 3x3 Grid forced to fit screen height */
         @media (min-width: 768px) {
-            .video-grid { grid-template-columns: repeat(3, 1fr); }
+            .video-grid { 
+                grid-template-columns: repeat(3, 1fr); 
+                grid-template-rows: repeat(3, 1fr); 
+            }
         }
 
-        /* Mobile Devices -> 1 Column Vertical Stack */
+        /* Mobile Layout -> 3 Rows vertical stack forced to fit screen height */
         @media (max-width: 767px) {
-            .video-grid { grid-template-columns: 1fr; }
+            .video-grid { 
+                grid-template-columns: 1fr; 
+                grid-template-rows: repeat(3, 1fr); 
+            }
         }
 
         .video-wrapper { 
             position: relative; 
             width: 100%; 
+            height: 100%; /* Spans exactly to fill its grid track fraction */
             background: #111; 
-            aspect-ratio: 16 / 9; 
             overflow: hidden;
             border-radius: 4px;
         }
@@ -45,7 +51,7 @@
         video { 
             width: 100%; 
             height: 100%; 
-            object-fit: cover; 
+            object-fit: contain; /* Keeps 16:9 ratio clean with pillarboxes if ratios conflict */
             display: block; 
         }
         
@@ -54,7 +60,7 @@
             position: fixed; 
             top: 50%; 
             transform: translateY(-50%);
-            background: rgba(0, 0, 0, 0.25); 
+            background: rgba(0, 0, 0, 0.4); 
             color: rgba(255, 255, 255, 0.7); 
             border: 1px solid rgba(255, 255, 255, 0.15);
             padding: 20px 10px; 
@@ -66,7 +72,6 @@
             border-radius: 4px;
         }
         
-        /* Snaps to high contrast on mouse hover or element touch */
         .nav-btn:hover { 
             background: rgba(0, 0, 0, 0.8); 
             color: #fff;
@@ -81,8 +86,8 @@
             .nav-btn {
                 padding: 14px 8px;
                 font-size: 15px;
-                background: rgba(0, 0, 0, 0.15);
-                color: rgba(255, 255, 255, 0.5);
+                background: rgba(0, 0, 0, 0.3);
+                color: rgba(255, 255, 255, 0.6);
             }
         }
     </style>
@@ -146,7 +151,6 @@
             `https://${cam.host}.services.ncdot.gov:8887/${cam.chan}/index.m3u8?token=${tokenConfig[cam.chan]}`
         );
 
-        // Dynamic adjustment by platform type (Mobile gets 3 streams max, desktop gets 9)
         const isMobile = window.innerWidth < 768;
         const CAMS_PER_PAGE = isMobile ? 3 : 9; 
         
@@ -166,7 +170,6 @@
 
         function loadPage(pageNumber) {
             destroyCurrentStreams();
-            window.scrollTo({ top: 0, behavior: 'instant' });
 
             const start = pageNumber * CAMS_PER_PAGE;
             const pageStreams = cameraSources.slice(start, start + CAMS_PER_PAGE);
