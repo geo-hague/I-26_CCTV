@@ -2,7 +2,7 @@ name: Scheduled Token Refresh
 
 on:
   schedule:
-    - cron: '37 10,16 * * *'
+    - cron: '37 8,14 * * *'
   workflow_dispatch:
 
 permissions:
