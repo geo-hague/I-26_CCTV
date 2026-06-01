@@ -23,17 +23,12 @@
 
         /* --- EXPLICIT HARD-LOCKED LAYOUTS --- */
 
-        /* 1. Large Desktop (1440p Monitors and above) -> Exactly 5 Columns */
-        @media (min-width: 1921px) {
-            .video-grid { grid-template-columns: repeat(5, 1fr); }
+        /* Standard & Large Desktop Layout -> 3 Columns (Targeting a clean 3x3 grid) */
+        @media (min-width: 768px) {
+            .video-grid { grid-template-columns: repeat(3, 1fr); }
         }
 
-        /* 2. Standard Desktop (1080p Monitors / 1920px wide screens) -> Exactly 4 Columns */
-        @media (min-width: 768px) and (max-width: 1920px) {
-            .video-grid { grid-template-columns: repeat(4, 1fr); }
-        }
-
-        /* 3. Mobile Devices -> 1 Column Vertical Stack */
+        /* Mobile Devices -> 1 Column Vertical Stack */
         @media (max-width: 767px) {
             .video-grid { grid-template-columns: 1fr; }
         }
@@ -125,7 +120,6 @@
         // --- END TOKENS ---
 
         const cameraChannels = [
-            // Page 1
             { host: "cfase02", chan: "chan-5373_l" },
             { host: "cfase03", chan: "chan-5374_l" },
             { host: "cfase04", chan: "chan-5375_l" },
@@ -134,7 +128,6 @@
             { host: "cfase02", chan: "chan-6332_l" },
             { host: "cfase04", chan: "chan-5381_l" },
             { host: "cfase04", chan: "chan-5432_l" },
-            // Page 2
             { host: "cfase03", chan: "chan-5440_l" },
             { host: "cfsse13", chan: "chan-5441_l" },
             { host: "cfase03", chan: "chan-6279_l" },
@@ -143,7 +136,6 @@
             { host: "cfase01", chan: "chan-6275_l" },
             { host: "cfase03", chan: "chan-6276_l" },
             { host: "cfsse05", chan: "chan-6327_l" },
-            // Page 3
             { host: "cfsse05", chan: "chan-6328_l" },
             { host: "cfsse03", chan: "chan-5444_l" },
             { host: "cfase03", chan: "chan-5446_l" },
@@ -154,9 +146,9 @@
             `https://${cam.host}.services.ncdot.gov:8887/${cam.chan}/index.m3u8?token=${tokenConfig[cam.chan]}`
         );
 
-        // Adjust streams per page automatically by platform type
+        // Dynamic adjustment by platform type (Mobile gets 3 streams max, desktop gets 9)
         const isMobile = window.innerWidth < 768;
-        const CAMS_PER_PAGE = isMobile ? 4 : 10; 
+        const CAMS_PER_PAGE = isMobile ? 3 : 9; 
         
         let currentPage = 0;
         let activeHlsInstances = [];
