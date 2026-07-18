@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>I-26 CCTV</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.8/hls.min.js"></script>
     <style>
@@ -12,11 +12,16 @@
             background-color: #000; font-family: sans-serif;
             overflow: hidden; /* Prevents all accidental scrolling */
         }
+
+        body {
+            padding-bottom: env(safe-area-inset-bottom);
+        }
         
         .video-grid {
             display: grid;
             width: 100%;
-            height: 100vh;
+            height: 100vh; /* fallback for browsers without dvh support */
+            height: 100dvh; /* actual visible viewport, accounts for mobile browser chrome */
             gap: 6px; 
             padding: 6px;
         }
