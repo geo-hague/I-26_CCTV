@@ -49,7 +49,7 @@ jobs:
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           
           # Only stage and commit if index.html actually changed
-          git add index.html
+          git add docs/index.html
           if ! git diff-index --quiet HEAD; then
             git commit -m "Automated Token Update [skip ci]"
             git push
