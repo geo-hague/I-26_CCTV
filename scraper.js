@@ -89,7 +89,7 @@ async function run() {
     await browser.close();
 
     // Merge logic for index.html variable syncing
-    const indexPath = path.join(__dirname, 'index.html');
+    const indexPath = path.join(__dirname, 'docs/index.html');
     if (!fs.existsSync(indexPath)) {
         console.error('❌ Missing target index.html layout file.');
         process.exit(1);
